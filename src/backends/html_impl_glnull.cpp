@@ -37,6 +37,11 @@ static void fakeRenderGui() {
     // Set the name of the graphics backend.
     HTiSetGLBackendName("Impl_GLNull");
 
+    // Publish the backend's ImTextureData handler. Skip this and
+    // HTImGuiCreateTextureRGBA32() fails with HTError_NotReady forever, which
+    // reads to a mod author as "the renderer has not started yet".
+    //HTiBackendSetTextureUpdateFunc(ImGui_ImplOpenGL3_UpdateTexture);
+
     // Set the GUI inited event.
     HTiBackendGLInitComplete();
   }

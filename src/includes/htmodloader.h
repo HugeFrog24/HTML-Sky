@@ -183,6 +183,9 @@ enum HTError_ {
   HTError_AccessDenied = 5,
   // ERROR_INVALID_HANDLE.
   HTError_InvalidHandle = 6,
+  // ERROR_NOT_READY. The loader cannot serve this yet but may later - retry on
+  // a following frame rather than treating it as a failure.
+  HTError_NotReady = 21,
   // ERROR_INVALID_PARAMETER.
   HTError_InvalidParam = 87,
   // ERROR_INSUFFICIENT_BUFFER.
@@ -196,7 +199,10 @@ enum HTError_ {
   // ERROR_NO_MORE_MATCHES.
   HTError_NoMoreMatches = 626,
   // ERROR_NOT_FOUND.
-  HTError_NotFound = 1168
+  HTError_NotFound = 1168,
+  // ERROR_INVALID_THREAD_ID. Called from a thread the API may not be called
+  // from - see the thread rule on the function that returned it.
+  HTError_InvalidThread = 1444
 };
 
 // Set the last error code of HTML API.
@@ -226,6 +232,54 @@ typedef struct {
  */
 HTMLAPIATTR HTStatus HTMLAPI HTImGuiDispatch(
   HTImGuiContexts *context);
+
+/**
+ * Create a texture from 32-bit RGBA pixels using whichever renderer backend is
+ * active, and return an ImTextureID usable with ImGui::Image() and
+ * ImDrawList::AddImage().
+ *
+ * WHY THIS EXISTS
+ *
+ * A mod cannot create textures on its own. The loader owns the renderer, and
+ * under the Vulkan layer there is no GL context at all - so a mod that uploads
+ * through OpenGL silently gets nothing back and its icons simply never appear,
+ * with no error anywhere.
+ *
+ * Handing out the VkDevice instead would work, but it couples every mod to
+ * Vulkan and to the lifetime of objects the loader recreates on swapchain
+ * rebuild. Doing it here costs the mod nothing and keeps it renderer-agnostic:
+ * both ImGui_ImplVulkan_UpdateTexture() and ImGui_ImplOpenGL3_UpdateTexture()
+ * accept an ImTextureData, so this dispatches to whichever backend is live and
+ * the mod never names a graphics API.
+ *
+ * MUST BE CALLED FROM HTModRenderGui(), on the render thread, like every other
+ * ImGui call. A call from any other thread is rejected with
+ * HTError_InvalidThread rather than being allowed to race the renderer.
+ *
+ * `pixels` is copied and need not outlive the call.
+ *
+ * On HT_FAIL, HTGetLastError() distinguishes the cases:
+ *   HTError_NotReady      the renderer has not started yet - retry next frame
+ *   HTError_InvalidParam  null argument, zero dimension, or too large
+ *   HTError_InvalidThread not on the render thread
+ *   HTError_NotFound      the renderer refused to allocate the texture
+ */
+HTMLAPIATTR HTStatus HTMLAPI HTImGuiCreateTextureRGBA32(
+  const void *pixels,
+  UINT32 width,
+  UINT32 height,
+  UINT64 *outTextureId);
+
+/**
+ * Release a texture created by HTImGuiCreateTextureRGBA32. Same thread rule.
+ *
+ * The id is invalid the moment this returns, but the GPU resources behind it
+ * are freed a few frames later, once no frame still in flight can reference
+ * them. Returns HTError_NotFound for an id that was never created or has
+ * already been destroyed.
+ */
+HTMLAPIATTR HTStatus HTMLAPI HTImGuiDestroyTexture(
+  UINT64 textureId);
 
 typedef int HTOptionType;
 enum HTOptionType_ {

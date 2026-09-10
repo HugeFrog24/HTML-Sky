@@ -85,6 +85,10 @@ void HTiDeinitGUI() {
 void HTiUpdateGUI() {
   ImGuiIO &io = ImGui::GetIO();
 
+  // Before the mods draw, not after: a texture destroyed during this frame's
+  // drawing must not be freed until the frame that drew it has been rendered.
+  HTiBackendUpdateModTextures();
+
   // Draw all windows.
   for (auto it = gModDataRuntime.begin(); it != gModDataRuntime.end(); it++) {
     PFN_HTModRenderGui guiRenderer = (PFN_HTModRenderGui)it->second.loaderFunc.pfn_HTModRenderGui;

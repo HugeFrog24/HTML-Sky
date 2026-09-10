@@ -639,6 +639,21 @@ int HTiSetGameBackendName(
 int HTiSetGLBackendName(
   const char *);
 
+// Renderer backends publish their ImTextureData handler here, which is what
+// lets HTImGuiCreateTextureRGBA32() work without knowing whether it is talking
+// to Vulkan or OpenGL. Both backends already have a function of exactly this
+// shape (ImGui_ImplXXXX_UpdateTexture), so this is a pointer to an existing
+// entry point rather than a new abstraction.
+struct ImTextureData;
+typedef void (*PFN_HTiUpdateTexture)(ImTextureData *);
+int HTiBackendSetTextureUpdateFunc(
+  PFN_HTiUpdateTexture);
+
+// Retire mod textures whose destroy has been requested, and note which thread
+// the renderer runs on. Called once per frame by HTiUpdateGUI(), ahead of the
+// mods' own drawing.
+void HTiBackendUpdateModTextures();
+
 // Set the name of the game executable file. The signature scanner only scans
 // codes in the executable file of the game.
 int HTiSetGameProcessName(

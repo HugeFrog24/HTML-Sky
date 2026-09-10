@@ -126,7 +126,17 @@ static std::map<VkDevice, DeviceData> gDeviceData;
 // Saved queue data objects.
 static std::map<VkQueue, QueueData> gQueueData;
 // Mutex.
-static std::mutex gMutex;
+// RECURSIVE on purpose. HT_vkCreateDevice holds this lock and then calls
+// getDeviceData(), and setDeviceDataQueues() -> createQueueData() ->
+// getQueueData(), both of which lock it again. std::mutex is not required to
+// be recursive and is not recursive here (MinGW-w64 gcc 16.1, posix thread
+// model, winpthreads), so the same code hangs the game inside vkCreateDevice -
+// black screen, no frames, "Sky isn't responding".
+//
+// Whichever toolchain upstream builds with evidently gets away with it, but
+// that is a property of that std::mutex implementation and not something the
+// code may rely on. Making the recursion explicit is what it already assumes.
+static std::recursive_mutex gMutex;
 // ImGui related data.
 static GuiStatus gGuiStatus = {0};
 
@@ -144,7 +154,7 @@ static char gPathLayerConfig[MAX_PATH] = {0};
  * Get associated dispatch table with given VkInstance object.
  */
 static InstanceDispatchTable *getInstanceDispatchTable(VkInstance instance) {
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   auto it = gInstanceTables.find(instance);
   if (it == gInstanceTables.end())
     return nullptr;
@@ -155,7 +165,7 @@ static InstanceDispatchTable *getInstanceDispatchTable(VkInstance instance) {
  * Get associated dispatch table with given VkDevice object.
  */
 static DeviceDispatchTable *getDeviceDispatchTable(VkDevice device) {
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   auto it = gDeviceData.find(device);
   if (it == gDeviceData.end())
     return nullptr;
@@ -166,7 +176,7 @@ static DeviceDispatchTable *getDeviceDispatchTable(VkDevice device) {
  * Get associated DeviceData object with given VkDevice object.
  */
 static DeviceData *getDeviceData(VkDevice device) {
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   return &gDeviceData[device];
 }
 
@@ -174,7 +184,7 @@ static DeviceData *getDeviceData(VkDevice device) {
  * Get associated QueueData object with given VkQueue object.
  */
 static QueueData *getQueueData(VkQueue queue) {
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   return &gQueueData[queue];
 }
 
@@ -624,6 +634,9 @@ static VkResult renderGui(
       ImGui_ImplVulkan_Init(&initInfo);
 
       HTiSetGLBackendName(HT_ImplVkLayer_Name);
+      // Lets mods create textures without a VkDevice - see
+      // HTImGuiCreateTextureRGBA32 in htmodloader.h.
+      HTiBackendSetTextureUpdateFunc(ImGui_ImplVulkan_UpdateTexture);
 
       // Set the gui inited event.
       HTiBackendGLInitComplete();
@@ -758,7 +771,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL HT_vkCreateInstance(
     *pInstance, "vkCreateDevice");
 
   // Store the table.
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   gInstanceTables[*pInstance] = instanceTable;
 
   return VK_SUCCESS;
@@ -776,7 +789,7 @@ static VKAPI_ATTR void VKAPI_CALL HT_vkDestroyInstance(
   if (table && table->DestroyInstance)
     table->DestroyInstance(instance, pAllocator);
 
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   gInstanceTables.erase(instance);
 }
 
@@ -829,7 +842,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL HT_vkCreateDevice(
     *pDevice, "vkGetDeviceQueue");
 
   // Store the table and related VkQueue.
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   DeviceData *deviceData = getDeviceData(*pDevice);
   deviceData->deviceTable = deviceTable;
   deviceData->device = *pDevice;
@@ -856,7 +869,7 @@ static VKAPI_ATTR void VKAPI_CALL HT_vkDestroyDevice(
   if (table && table->DestroyDevice)
     table->DestroyDevice(device, pAllocator);
 
-  std::lock_guard<std::mutex> lock(gMutex);
+  std::lock_guard<std::recursive_mutex> lock(gMutex);
   gDeviceData.erase(device);
 }
 

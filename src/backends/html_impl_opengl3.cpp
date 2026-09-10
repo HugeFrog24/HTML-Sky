@@ -57,6 +57,7 @@ static void doRender(
     // Initialize ImGui.
     ImGui_ImplOpenGL3_Init();
     HTiSetGLBackendName(HT_ImplOpenGL3_Name);
+    HTiBackendSetTextureUpdateFunc(ImGui_ImplOpenGL3_UpdateTexture);
 
     // Set the gui inited event.
     HTiBackendGLInitComplete();
