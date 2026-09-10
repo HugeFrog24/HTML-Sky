@@ -109,6 +109,7 @@ libs:
 	-@$(MAKE) -s -C ./libraries/imgui-1.92.2b all
 	-@$(MAKE) -s -C ./libraries/MinHook libMinHook.a
 	-@$(MAKE) -s -C ./libraries/cJSON libcjson.a
+	-@$(MAKE) -s -C ./libraries/leveldb all
 
 clean_libs:
 	-@$(MAKE) -s -C ./libraries/imgui-1.92.2b clean
