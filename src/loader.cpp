@@ -91,9 +91,12 @@ bool ModManifest::readFromFile(
 // Resource type and name the mod metadata is published under. A string name
 // rather than an integer id, so no toolchain-assigned ordinal can collide.
 //
-// RT_RCDATA itself is MAKEINTRESOURCE(10), which resolves to the ANSI form
-// unless UNICODE is defined - and this project does not define it - so it
-// cannot be handed to FindResourceW. Spell the wide form explicitly.
+// The type is spelled MAKEINTRESOURCEW rather than RT_RCDATA because
+// MAKEINTRESOURCE casts the integer to LPSTR or LPWSTR depending on whether
+// UNICODE is defined, and this project does not define it - so RT_RCDATA is an
+// LPSTR and does not match FindResourceW's parameter. It is purely a pointer
+// type mismatch: an integer resource id is not text and is never decoded
+// through a code page, so there is no ANSI "form" of it to convert.
 #define HTML_MANIFEST_RESOURCE L"HTMODMANIFEST"
 #define HTML_MANIFEST_RESTYPE  MAKEINTRESOURCEW(10)
 
@@ -101,10 +104,15 @@ bool ModManifest::readFromModule(
   const std::wstring &modFolderName,
   const std::wstring &dllPath
 ) {
-  // LOAD_LIBRARY_AS_DATAFILE maps the image as data: no DllMain, no imports
-  // resolved, no code executed. That is the whole point - a mod whose imports
-  // cannot bind still answers "what are you" here, which is the difference
-  // between a named failure and an invisible one.
+  // LOAD_LIBRARY_AS_DATAFILE maps the file as a plain data file: no DllMain,
+  // no imports resolved, no code executed. That is the whole point - a mod
+  // whose imports cannot bind still answers "what are you" here, which is the
+  // difference between a named failure and an invisible one.
+  //
+  // It is NOT an image-layout mapping; the resource functions understand the
+  // data-file representation, which is why they are the only way to read this
+  // handle. LOAD_LIBRARY_AS_IMAGE_RESOURCE is the flag that asks for image
+  // expansion, and nothing here needs it.
   HMODULE hMod = LoadLibraryExW(
     dllPath.c_str(),
     nullptr,
@@ -252,7 +260,12 @@ static void scanMods() {
 
   modsFolderPath += L"\\*";
   hFindFile = FindFirstFileW(modsFolderPath.data(), &findData);
-  if (!hFindFile)
+  // FindFirstFileW reports failure with INVALID_HANDLE_VALUE, never NULL, so
+  // the old `!hFindFile` test could not fire. A missing or unreadable mods
+  // folder therefore fell straight into the loop below with findData never
+  // written - reading an uninitialised cFileName, and closing a handle that
+  // was never opened.
+  if (hFindFile == INVALID_HANDLE_VALUE)
     return;
 
   do {

@@ -16,45 +16,74 @@ static HMODULE hWinHttp;
 /**
  * Get path to the dll and the layer config file.
  */
+// Append `tail` to `dst`, or fail rather than truncate a path. The code this
+// replaces used strcat() into MAX_PATH buffers under a comment that simply
+// assumed the result would fit.
+static i32 appendW(
+  wchar_t *dst,
+  const wchar_t *tail
+) {
+  if (wcslen(dst) + wcslen(tail) + 1 > MAX_PATH)
+    return 0;
+  wcscat(dst, tail);
+  return 1;
+}
+
+// Narrow copy of a wide path in the active code page, for the two consumers
+// that genuinely need one: the public HTGetModFolder / HTGetGameExeFolder ABI,
+// and the ANSI RegEnumValueA hook. Deliberately produces the same bytes
+// GetModuleFileNameA used to, so neither contract changes.
+static void narrowFromWide(
+  char *dst,
+  const wchar_t *src
+) {
+  WideCharToMultiByte(CP_ACP, 0, src, -1, dst, MAX_PATH, "?", nullptr);
+}
+
 static i32 initPaths(
   HMODULE hModule
 ) {
-  char *p;
+  wchar_t *p;
   wchar_t tmp[MAX_PATH];
 
-  GetModuleFileNameA(hModule, gPathDll, MAX_PATH);
-  GetModuleFileNameA(nullptr, gPathGameExe, MAX_PATH);
+  // Wide first; the narrow paths are derived from these.
+  //
+  // It used to be the other way round, and that lost the path outright on any
+  // machine whose game folder is not representable in its own ANSI code page.
+  // GetModuleFileNameA substitutes '?' for every character it cannot encode,
+  // and '?' is not a legal filename character, so "C:\<cyrillic>\Sky" became
+  // "C:\????\Sky" - a path that cannot exist, with every later file operation
+  // failing for a reason nothing reported. Splitting with strrchr() was unsafe
+  // for a second reason: it is not DBCS-aware, and on a double-byte code page
+  // a trail byte can equal '\\' (U+8868 encodes as 95 5C in CP932), so the
+  // split could land inside a character.
+  if (!GetModuleFileNameW(hModule, gPathDllWide, MAX_PATH))
+    return 0;
+  if (!GetModuleFileNameW(nullptr, gPathGameExeWide, MAX_PATH))
+    return 0;
 
-  p = strrchr(gPathDll, '\\');
+  p = wcsrchr(gPathDllWide, L'\\');
   if (!p)
     return 0;
   *p = 0;
 
-  p = strrchr(gPathGameExe, '\\');
+  p = wcsrchr(gPathGameExeWide, L'\\');
   if (!p)
     return 0;
   *p = 0;
-  strcpy(gPathData, gPathGameExe);
-  strcat(gPathData, "\\htmodloader");
 
-  strcpy(gPathMods, gPathData);
-  strcat(gPathMods, "\\mods");
+  wcscpy(gPathDataWide, gPathGameExeWide);
+  if (!appendW(gPathDataWide, L"\\htmodloader"))
+    return 0;
 
-  // We assume that the path is shorter than MAX_PATH.
-  MultiByteToWideChar(
-    CP_ACP,
-    MB_PRECOMPOSED,
-    gPathData,
-    strlen(gPathData),
-    gPathDataWide,
-    MAX_PATH);
-  MultiByteToWideChar(
-    CP_ACP,
-    MB_PRECOMPOSED,
-    gPathMods,
-    strlen(gPathMods),
-    gPathModsWide,
-    MAX_PATH);
+  wcscpy(gPathModsWide, gPathDataWide);
+  if (!appendW(gPathModsWide, L"\\mods"))
+    return 0;
+
+  narrowFromWide(gPathDll, gPathDllWide);
+  narrowFromWide(gPathGameExe, gPathGameExeWide);
+  narrowFromWide(gPathData, gPathDataWide);
+  narrowFromWide(gPathMods, gPathModsWide);
 
   // Create mod data folders.
   if (!HTiFolderExists(gPathDataWide))
@@ -64,7 +93,8 @@ static i32 initPaths(
 
   // ImGui uses UTF-8 codepage in paths, so we need the conversion below.
   wcscpy(tmp, gPathDataWide);
-  wcscat(tmp, L"\\htmlgui.ini");
+  if (!appendW(tmp, L"\\htmlgui.ini"))
+    return 0;
   wcstoutf8(tmp, gPathGuiIni, MAX_PATH);
 
   return 1;

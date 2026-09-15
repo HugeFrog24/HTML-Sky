@@ -1082,10 +1082,18 @@ int HTi_ImplVkLayer_Init() {
 
   LOG("[ImplVklayer][INFO] HTi_ImplVkLayer_Init() called.\n");
 
+  // The narrow copy exists only for the RegEnumValueA hook below, which hands
+  // this string to the Vulkan loader through an ANSI API - so it stays in the
+  // active code page.
   strcpy(gPathLayerConfig, gPathDll);
   strcat(gPathLayerConfig, "\\html-config.json");
 
-  std::wstring path = HTiUtf8ToWstring(gPathLayerConfig);
+  // The FILE is opened from the wide path, not by decoding those ANSI bytes as
+  // UTF-8. They are not UTF-8, and on a code page that can actually represent
+  // the folder - Japanese Windows, say - that decode fails outright with
+  // ERROR_NO_UNICODE_TRANSLATION and yields an EMPTY path, so the layer
+  // manifest was neither found nor created and the overlay never appeared.
+  std::wstring path = std::wstring(gPathDllWide) + L"\\html-config.json";
   if (!HTiFileExists(path.c_str())) {
     // Try to create html-config.json
     FILE *fd = _wfopen(path.c_str(), L"w+");

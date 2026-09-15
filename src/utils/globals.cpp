@@ -17,6 +17,13 @@ char gPathGameExe[MAX_PATH] = {0};
 char gPathData[MAX_PATH] = {0};
 // Path to the mods folder.
 char gPathMods[MAX_PATH] = {0};
+// The wide paths are the authoritative ones: they come straight from
+// GetModuleFileNameW and the narrow ones above are DERIVED from them, never
+// the other way round. See initPaths().
+// The folder path where the DLL is located, in wide char.
+wchar_t gPathDllWide[MAX_PATH] = {0};
+// The folder path where the game executable is located, in wide char.
+wchar_t gPathGameExeWide[MAX_PATH] = {0};
 // Path to the data folder, in wide char.
 wchar_t gPathDataWide[MAX_PATH] = {0};
 // Path to the mods folder, in wide char.

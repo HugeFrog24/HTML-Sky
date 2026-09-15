@@ -78,7 +78,9 @@ extern char gPathDll[MAX_PATH]
   , gPathMods[MAX_PATH]
   , gPathGuiIni[MAX_PATH];
 extern wchar_t gPathModsWide[MAX_PATH]
-  , gPathDataWide[MAX_PATH];
+  , gPathDataWide[MAX_PATH]
+  , gPathDllWide[MAX_PATH]
+  , gPathGameExeWide[MAX_PATH];
 extern HANDLE gHeap
   , gEventGuiInit;
 extern HMODULE gModLoaderHandle;
