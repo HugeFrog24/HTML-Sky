@@ -88,11 +88,19 @@ void note(Result &out, Anomaly anomaly) {
 // This is a containment check, not a security boundary: a junction inside the
 // folder can still lead elsewhere, and reparse-point policy is not settled.
 bool withinFolder(const std::wstring &folder, const std::wstring &candidate) {
+  // GetFullPathNameW returns the REQUIRED length when the buffer is too small,
+  // which is a positive number - so a bare truthiness test accepted a path it
+  // had not actually written, and the comparison below then ran against an
+  // empty buffer. A path too long to resolve is refused, not guessed at.
   wchar_t fullFolder[MAX_PATH] = {0};
   wchar_t fullCandidate[MAX_PATH] = {0};
-  if (!GetFullPathNameW(folder.c_str(), MAX_PATH, fullFolder, nullptr))
+  const DWORD folderLen =
+    GetFullPathNameW(folder.c_str(), MAX_PATH, fullFolder, nullptr);
+  if (folderLen == 0 || folderLen >= MAX_PATH)
     return false;
-  if (!GetFullPathNameW(candidate.c_str(), MAX_PATH, fullCandidate, nullptr))
+  const DWORD candidateLen =
+    GetFullPathNameW(candidate.c_str(), MAX_PATH, fullCandidate, nullptr);
+  if (candidateLen == 0 || candidateLen >= MAX_PATH)
     return false;
 
   std::wstring base = fullFolder;

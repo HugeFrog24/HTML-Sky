@@ -149,10 +149,14 @@ TEST_TARGET = $(TEST_OUT)/modinspect_test.exe
 TEST_SRC = $(TEST_DIR)/modinspect_test.cpp $(SRC_DIR)/modinspect.cpp \
 	$(SRC_DIR)/utils/semver.cpp $(SRC_DIR)/utils/path.cpp
 
-# Both forms on purpose: which shell make picks here depends on whether an sh is
-# on PATH, and the two disagree about backslashes. Each is allowed to fail.
+# The same shape as $(DIST_DIR) above: one cmd-style mkdir, tolerated when the
+# directory already exists.
+#
+# The previous recipe ran a POSIX mkdir AND a cmd one and ignored both results.
+# Under sh the unquoted `.\dist\test` collapsed to `.disttest`, leaving a stray
+# directory in the tree. A directory that genuinely cannot be created still
+# fails loudly at the compile step below, which does not ignore errors.
 $(TEST_OUT):
-	-@mkdir -p $(TEST_OUT)
 	-@mkdir $(subst /,\,$(TEST_OUT))
 
 test: $(DIST_DIR) $(TEST_OUT) libs
