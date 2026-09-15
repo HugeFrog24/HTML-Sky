@@ -10,6 +10,7 @@
 #include "MinHook.h"
 
 #include "htinternal.hpp"
+#include "modinspect.hpp"
 #include "includes/backends/html_impl_sky.h"
 #include "includes/htconfig.h"
 
@@ -30,17 +31,14 @@ static PFN_CreateWindowExW fn_CreateWindowExW;
 static i32 editionCheck(
   HTGameEdition edition
 ) {
-  HTGameEdition local = gGameStatus.edition;
-  if (
-    edition == HT_ImplSky_EditionAll
-    && (local == HT_ImplSky_EditionChinese || local == HT_ImplSky_EditionInternation)
-  )
-    return 1;
-
-  if (edition == local)
-    return 1;
-
-  return 0;
+  // Through the shared predicate, so the rule the launcher reports and the rule
+  // the loader enforces are one function. It was spelled out twice, and this
+  // copy was the one with a caller - which made "edition policy is centralised"
+  // untrue.
+  return ModInspect::CheckEdition(
+           (unsigned)edition, (unsigned)gGameStatus.edition)
+           ? 1
+           : 0;
 }
 
 static i32 checkWindowAndSetupAW(

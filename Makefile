@@ -13,7 +13,15 @@ CPP_SRC = $(wildcard $(SRC_DIR)/*.cpp $(SRC_DIR)/*/*.cpp)
 C_OBJ = $(addprefix $(DIST_DIR)/, $(notdir $(C_SRC:.c=.o)))
 CPP_OBJ = $(addprefix $(DIST_DIR)/, $(notdir $(CPP_SRC:.cpp=.o)))
 
-CXX_HEADER = $(wildcard $(SRC_DIR)/*.h $(SRC_DIR)/*/*.h)
+# .hpp as well as .h. It used to be .h only, so htinternal.hpp and
+# modinspect.hpp were dependencies of nothing: editing the shared inspection
+# policy rebuilt whatever .cpp changed and left every other object stale,
+# linking two different versions of the policy into one DLL. Coarse on purpose -
+# any header change rebuilds every object - because that is obviously correct,
+# and this tree's vpath setup makes a generated .d scheme easy to get subtly
+# wrong for no gain at this size.
+CXX_HEADER = $(wildcard $(SRC_DIR)/*.h $(SRC_DIR)/*/*.h \
+	$(SRC_DIR)/*.hpp $(SRC_DIR)/*/*.hpp)
 
 TARGET = winhttp.dll
 BIN_TARGET = $(DIST_DIR)/$(TARGET)
@@ -76,7 +84,23 @@ CFLAGS += -DNDEBUG -DHTMLAPIATTR=__declspec(dllexport)
 vpath %.c $(SRC_DIRS)
 vpath %.cpp $(SRC_DIRS)
 
-.PHONY: all clean libs clean_libs clean_all
+.PHONY: all clean libs clean_libs clean_all scanner
+
+# The launcher's read-only scanner, built from the SAME ModInspect core the DLL
+# links. That is the entire reason it exists: a launcher that installs and
+# removes mods has to agree with the loader about what a mod IS, and a second
+# implementation in another language can only discover a disagreement after one
+# has already shipped.
+#
+# It lives outside src/ deliberately. The object lists above glob src/*.cpp and
+# src/*/*.cpp, so a main() placed under src/ would be linked into winhttp.dll.
+SCANNER_TARGET = $(DIST_DIR)/htmodscan.exe
+SCANNER_SRC = ./scanner/main.cpp $(SRC_DIR)/modinspect.cpp \
+	$(SRC_DIR)/utils/semver.cpp $(SRC_DIR)/utils/path.cpp
+
+# The scanner's rule is further down on purpose: make takes the FIRST target in
+# the file as the default goal, and putting it here quietly made a bare `make`
+# build the scanner instead of the DLL.
 
 $(BIN_TARGET): $(C_OBJ) $(CPP_OBJ)
 	@echo Linking ...
@@ -103,6 +127,12 @@ clean:
 
 all: $(DIST_DIR) libs
 	-@$(MAKE) $(BIN_TARGET)
+
+scanner: $(DIST_DIR) libs
+	@echo Building scanner ...
+	@$(CXX) --std=c++17 $(CFLAGS) -municode $(SCANNER_SRC) \
+		./libraries/cJSON/cJSON.o -o $(SCANNER_TARGET)
+	@echo Done.
 
 libs:
 	@echo Compiling libraries ...

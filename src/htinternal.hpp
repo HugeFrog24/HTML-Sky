@@ -371,29 +371,18 @@ struct ModManifest {
   ModManifest() = default;
   ~ModManifest() = default;
 
-  // Parse manifest.json to get the basic data of a mod, and check file integrity
-  // of the mod.
-  bool readFromFile(const std::wstring &modFolderName);
-
-  // Read the manifest from an RT_RCDATA resource inside the mod DLL itself.
+  // No reader here on purpose.
   //
-  // Preferred over readFromFile because it works on a DLL that CANNOT load:
-  // LOAD_LIBRARY_AS_DATAFILE maps the image without resolving imports or
-  // running code, so a mod built against a newer loader still gets a name and
-  // a reason instead of vanishing from the list entirely.
+  // Deciding what a mod is - resource before sidecar, identity validation,
+  // folder ambiguity, version and edition rules - lives in ModInspect
+  // (src/modinspect.hpp), which the launcher's scanner is built from too. This
+  // struct is filled FROM a ModInspect::Result and does not know how to read
+  // anything itself.
   //
-  // readFromFile stays as the fallback, and NOT for our own mods. It is for
-  // everyone else's, which were built against the sidecar format and whose
-  // loader this binary replaces when a user installs it. Deleting it would
-  // silently break working third-party installs.
-  bool readFromModule(const std::wstring &modFolderName,
-                      const std::wstring &dllPath);
-
-  // Read the mod manifest from cJSON object.
-  bool read(const cJSON *json);
-
-  // Read dependencies from cJSON object.
-  bool readDependencies(const cJSON *deps);
+  // It used to: readFromFile, readFromModule, read and readDependencies were
+  // methods here. They were deleted rather than left unused, because a second
+  // complete implementation of the policy sitting in the tree is precisely the
+  // thing that drifts.
 
   // Set the status.
   void setStatus(

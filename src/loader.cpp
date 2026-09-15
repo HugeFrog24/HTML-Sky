@@ -8,247 +8,8 @@
 #include "includes/htmodloader.h"
 #include "utils/texts.h"
 #include "htinternal.hpp"
+#include "modinspect.hpp"
 
-// Package name should only contains `a-z A-Z 0-9 _ . @ / -`.
-static inline bool validatePackageName(
-  const std::string &packageName
-) {
-  return std::all_of(
-    packageName.begin(),
-    packageName.end(),
-    [](char ch) -> bool {
-      return (ch >= 'a' && ch <= 'z')
-        || (ch >= 'A' && ch <= 'Z')
-        || (ch >= '0' && ch <= '9')
-        || ch == '.'
-        || ch == '-'
-        || ch == '_'
-        || ch == '@'
-        || ch == '/';
-    }
-  );
-}
-
-// Dll must not be located out of `mods` folder.
-static inline bool validateDllPath(
-  const std::wstring &path
-) {
-  std::wstring rel = HTiPathRelative(
-    gPathModsWide,
-    path);
-
-  if (rel.empty())
-    return false;
-  if (HTiPathIsAbsolute(rel))
-    return false;
-  if (rel.size() > 2 && rel[0] == L'.' && rel[1] == L'.')
-    return false;
-
-  return true;
-}
-
-// Helper function for get string value with cJSON.
-static inline std::string getStringValueFrom(
-  const cJSON *json,
-  const char *key
-) {
-  char *s = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, key));
-  return s ? s : "";
-}
-
-bool ModManifest::readFromFile(
-  const std::wstring &modFolderName
-) {
-  std::wstring folder(gPathModsWide);
-
-  // Get the mod folder.
-  folder = HTiPathJoin({folder, modFolderName});
-
-  // Check the manifest.json.
-  std::wstring jsonPath = HTiPathJoin({folder, L"\\manifest.json"});
-  if (!HTiFileExists(jsonPath.data()))
-    return false;
-
-  // Save paths.
-  paths.folder = folder;
-  paths.json = jsonPath;
-
-  // Open manifest.json.
-  std::string content = HTiReadFileAsUtf8(jsonPath);
-
-  // Parse and deserialize the file.
-  cJSON *json = cJSON_Parse(content.c_str());
-  if (!json)
-    return false;
-
-  bool ret = read(json);
-
-  cJSON_Delete(json);
-
-  return ret;
-}
-
-// Resource type and name the mod metadata is published under. A string name
-// rather than an integer id, so no toolchain-assigned ordinal can collide.
-//
-// The type is spelled MAKEINTRESOURCEW rather than RT_RCDATA because
-// MAKEINTRESOURCE casts the integer to LPSTR or LPWSTR depending on whether
-// UNICODE is defined, and this project does not define it - so RT_RCDATA is an
-// LPSTR and does not match FindResourceW's parameter. It is purely a pointer
-// type mismatch: an integer resource id is not text and is never decoded
-// through a code page, so there is no ANSI "form" of it to convert.
-#define HTML_MANIFEST_RESOURCE L"HTMODMANIFEST"
-#define HTML_MANIFEST_RESTYPE  MAKEINTRESOURCEW(10)
-
-bool ModManifest::readFromModule(
-  const std::wstring &modFolderName,
-  const std::wstring &dllPath
-) {
-  // LOAD_LIBRARY_AS_DATAFILE maps the file as a plain data file: no DllMain,
-  // no imports resolved, no code executed. That is the whole point - a mod
-  // whose imports cannot bind still answers "what are you" here, which is the
-  // difference between a named failure and an invisible one.
-  //
-  // It is NOT an image-layout mapping; the resource functions understand the
-  // data-file representation, which is why they are the only way to read this
-  // handle. LOAD_LIBRARY_AS_IMAGE_RESOURCE is the flag that asks for image
-  // expansion, and nothing here needs it.
-  HMODULE hMod = LoadLibraryExW(
-    dllPath.c_str(),
-    nullptr,
-    LOAD_LIBRARY_AS_DATAFILE);
-  if (!hMod)
-    return false;
-
-  bool ret = false;
-  HRSRC res = FindResourceW(hMod, HTML_MANIFEST_RESOURCE, HTML_MANIFEST_RESTYPE);
-
-  if (res) {
-    DWORD size = SizeofResource(hMod, res);
-    HGLOBAL handle = LoadResource(hMod, res);
-    const char *data = handle
-      ? reinterpret_cast<const char *>(LockResource(handle))
-      : nullptr;
-
-    if (data && size) {
-      // The resource is NOT null-terminated, and cJSON_Parse expects a C
-      // string. Parsing in place would read past the resource into whatever
-      // follows it in .rsrc.
-      std::string content(data, size);
-
-      cJSON *json = cJSON_Parse(content.c_str());
-      if (json) {
-        // The module carrying this manifest IS the mod, so `main` is neither
-        // present nor wanted - a filename inside the file it names could only
-        // ever disagree with reality. Setting paths.dll here is what tells
-        // read() not to look for one.
-        paths.folder = HTiPathJoin({std::wstring(gPathModsWide), modFolderName});
-        paths.dll = dllPath;
-
-        ret = read(json);
-        cJSON_Delete(json);
-      } else {
-        LOGW("Malformed HTMODMANIFEST resource in: %ls\n", dllPath.c_str());
-      }
-    }
-  }
-
-  // Frees the data-file mapping. LockResource pointers die with it, which is
-  // why the bytes were copied above rather than kept.
-  FreeLibrary(hMod);
-
-  return ret;
-}
-
-bool ModManifest::read(
-  const cJSON *json
-) {
-  const wchar_t *manifestPath = paths.json.c_str();
-  (void)manifestPath;
-
-  // Get package name.
-  meta.packageName = getStringValueFrom(json, "package_name");
-  if (meta.packageName.empty() || !validatePackageName(meta.packageName)) {
-    LOGW(
-      "Invalid package name \"%s\" in: %ls\n",
-      meta.packageName.c_str(),
-      manifestPath);
-    return false;
-  }
-
-  // Get dll path from manifest.
-  //
-  // Skipped entirely when paths.dll is already set, which is the case for a
-  // manifest read out of the module's own resources: the file we opened IS the
-  // mod, so there is no pointer to follow and nothing to validate. Only the
-  // sidecar path needs `main`, and for that path it stays mandatory.
-  if (paths.dll.empty()) {
-    const char *parsedStr = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "main"));
-    if (!parsedStr) {
-      LOGW("Missing dll path of: %ls\n", manifestPath);
-      return false;
-    }
-
-    // Dll path must not be an absolute path.
-    std::wstring dllPathOrigin = HTiUtf8ToWstring(parsedStr);
-    if (HTiPathIsAbsolute(dllPathOrigin))
-      goto InvalidDllPath;
-
-    // Dll must be located in `mods/` folder.
-    paths.dll = HTiPathJoin({paths.folder, dllPathOrigin});
-    if (!validateDllPath(paths.dll)) {
-InvalidDllPath:
-      LOGW("Invalid dll path of: %ls\n", manifestPath);
-      return false;
-    }
-  }
-
-  // Get mod version.
-  std::string version = getStringValueFrom(json, "version");
-  if (!meta.version.read(version)) {
-    LOGW("Invalid mod version of: %ls\n", manifestPath);
-    return false;
-  }
-
-  // Get compatible game edition of the mod.
-  f64 editionFlag = cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(json, "game_edition"));
-  if (std::isnan(editionFlag)) {
-    // Invalid game edition.
-    LOGW("Invalid game edition of: %ls\n", manifestPath);
-    return false;
-  }
-  gameEditionFlags = (i32)editionFlag;
-
-  // Get display info.
-  modName = getStringValueFrom(json, "mod_name");
-  description = getStringValueFrom(json, "description");
-  author = getStringValueFrom(json, "author");
-
-  const cJSON *deps = cJSON_GetObjectItemCaseSensitive(json, "dependencies");
-  if (deps)
-    readDependencies(deps);
-
-  return true;
-}
-
-bool ModManifest::readDependencies(
-  const cJSON *deps
-) {
-  if (!cJSON_IsObject(deps))
-    return false;
-
-  const cJSON *item;
-  cJSON_ArrayForEach(item, deps) {
-    if (!cJSON_IsString(item))
-      continue;
-    dependencies.push_back({
-      item->string,
-      cJSON_GetStringValue(item)
-    });
-  }
-
-  return true;
-}
 
 // Scan all potential mods.
 static void scanMods() {
@@ -276,58 +37,49 @@ static void scanMods() {
 
     LOGI("Found potential mod folder: %ls\n", findData.cFileName);
 
-    ModManifest manifest;
-
-    // Resource first, sidecar second.
-    //
-    // A mod folder may contain several DLLs (a mod plus its own helper
-    // libraries), and only the mod itself carries the manifest resource, so
-    // every DLL is offered to the reader and the first one that answers wins.
-    // Nothing else identifies which is which without a sidecar to say so.
-    bool found = false;
-    bool ambiguous = false;
-    std::wstring dllGlob = HTiPathJoin(
-      {std::wstring(gPathModsWide), findData.cFileName, L"\\*.dll"});
-    WIN32_FIND_DATAW dllData;
-    HANDLE hFindDll = FindFirstFileW(dllGlob.data(), &dllData);
-    if (hFindDll != INVALID_HANDLE_VALUE) {
-      do {
-        if (dllData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-          continue;
-        std::wstring dllPath = HTiPathJoin(
-          {std::wstring(gPathModsWide), findData.cFileName,
-           std::wstring(L"\\") + dllData.cFileName});
-        ModManifest candidate;
-        if (candidate.readFromModule(findData.cFileName, dllPath)) {
-          if (found) {
-            // Two DLLs in one folder both claiming to be the mod. Refuse
-            // rather than pick: FindFirstFileW/FindNextFileW define no
-            // ordering, so "first wins" would resolve differently on different
-            // machines or after a defragment - a mod that works here and not
-            // there, with nothing to point at.
-            //
-            // The realistic cause is a build directory copied wholesale: an
-            // unstripped or backup copy of the mod carries the same resource
-            // as the real one.
-            LOGW("Folder %ls has more than one mod DLL with a manifest "
-                 "resource - skipping it. Leave exactly one.\n",
-                 findData.cFileName);
-            ambiguous = true;
-            break;
-          }
-          manifest = candidate;
-          found = true;
-        }
-      } while (FindNextFileW(hFindDll, &dllData));
-      FindClose(hFindDll);
+    // Deciding what a mod is happens in exactly one place, ModInspect, which
+    // the launcher's scanner is built from too. Reimplementing any of it here
+    // would recreate the disagreement that shared core exists to remove - a mod
+    // the loader runs and the launcher calls broken, or the reverse.
+    const ModInspect::Result inspected =
+      ModInspect::InspectFolder(gPathModsWide, findData.cFileName);
+    if (inspected.outcome != ModInspect::Outcome::Ok) {
+      LOGW(
+        "Skipping %ls: %s%s%s\n",
+        findData.cFileName,
+        ModInspect::ToString(inspected.outcome),
+        inspected.detail.empty() ? "" : " - ",
+        inspected.detail.c_str());
+      continue;
+    }
+    for (const ModInspect::Anomaly anomaly : inspected.anomalies) {
+      // Cast to void because LOG*() compiles to nothing outside the debug
+      // build, which leaves this loop body empty and the variable unused. The
+      // anomalies are not the loader's business to act on - it accepted the mod
+      // - they are for the scanner to hand the launcher.
+      (void)anomaly;
+      LOGW(
+        "Mod folder %ls: %s\n", findData.cFileName, ModInspect::ToString(anomaly));
     }
 
-    if (ambiguous)
-      continue;
-    if (!found && !manifest.readFromFile(findData.cFileName))
-      continue;
-    if (!HTiFileExists(manifest.paths.dll.data()))
-      continue;
+    ModManifest manifest;
+    manifest.paths.folder =
+      HTiPathJoin({std::wstring(gPathModsWide), findData.cFileName});
+    manifest.paths.dll = inspected.dllPath;
+    manifest.meta.packageName = inspected.identity.packageName;
+    // Already accepted by ModInspect::ParsesAsVersion, which is this same
+    // parser - so this cannot fail without the two disagreeing.
+    manifest.meta.version.read(inspected.identity.version);
+    manifest.modName = inspected.identity.modName;
+    manifest.description = inspected.identity.description;
+    manifest.author = inspected.identity.author;
+    manifest.gameEditionFlags = inspected.identity.gameEdition;
+    for (const ModInspect::Dependency &dep : inspected.identity.dependencies) {
+      ModDependency out;
+      out.packageName = dep.packageName;
+      out.constraint = dep.versionRange;
+      manifest.dependencies.push_back(out);
+    }
 
     if (!HTiBackendCheckEdition(manifest.gameEditionFlags))
       // Skip mods that not compatible with current game edition.
