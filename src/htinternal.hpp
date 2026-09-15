@@ -373,6 +373,20 @@ struct ModManifest {
   // of the mod.
   bool readFromFile(const std::wstring &modFolderName);
 
+  // Read the manifest from an RT_RCDATA resource inside the mod DLL itself.
+  //
+  // Preferred over readFromFile because it works on a DLL that CANNOT load:
+  // LOAD_LIBRARY_AS_DATAFILE maps the image without resolving imports or
+  // running code, so a mod built against a newer loader still gets a name and
+  // a reason instead of vanishing from the list entirely.
+  //
+  // readFromFile stays as the fallback, and NOT for our own mods. It is for
+  // everyone else's, which were built against the sidecar format and whose
+  // loader this binary replaces when a user installs it. Deleting it would
+  // silently break working third-party installs.
+  bool readFromModule(const std::wstring &modFolderName,
+                      const std::wstring &dllPath);
+
   // Read the mod manifest from cJSON object.
   bool read(const cJSON *json);
 
@@ -402,9 +416,26 @@ struct ModManifest {
   // Dependencies of the mod.
   std::vector<ModDependency> dependencies;
   // Mod runtime data.
-  ModRuntime *runtime;
+  //
+  // These two carry default initializers because ModManifest is now COPIED:
+  // the scan loop builds a candidate, and assigning it memberwise reads every
+  // scalar. Default-initialization leaves them indeterminate, so the copy was
+  // undefined behaviour even though the destination is overwritten a few lines
+  // later - the indeterminate READ has already happened by then.
+  //
+  // Before the embedded-manifest reader, nothing copied a manifest that had
+  // not been filled in, so the missing initializers were latent rather than
+  // wrong.
+  ModRuntime *runtime = nullptr;
   // Mod status.
-  ModStatus status;
+  ModStatus status = ModStatus_Ok;
+  // GetLastError() from a failed LoadLibraryW, or 0.
+  //
+  // Carried on the manifest rather than only logged, because LOG*() compiles
+  // to nothing outside the debug build - so in the build people actually run,
+  // the log does not exist and the UI is the only place a reason can reach
+  // anyone.
+  unsigned long loadError = 0;
 };
 
 // HTML expected functions.

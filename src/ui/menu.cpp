@@ -274,9 +274,14 @@ void HTiMenuModList() {
   for (auto it = gModDataLoader.begin(); it != gModDataLoader.end(); ++it, i++) {
     ModManifest &manifest = it->second;
 
-    // Don't display mods that isn't expanded successfully.
-    if (!manifest.runtime)
-      continue;
+    // A mod that failed to LOAD is still shown, with its reason. Skipping
+    // everything without a runtime made the most confusing failure invisible:
+    // the files are present, the metadata is readable, and the mod simply is
+    // not there. It was only skippable before because nothing could read a
+    // manifest without loading the DLL first.
+    const bool failed = !manifest.runtime;
+    if (failed && manifest.status == ModStatus_Ok)
+      continue;  // Never even reached load - nothing useful to say yet.
 
     // Show mod info.
     ImGuiID childId = ImGui::GetID((void *)(u64)i);
@@ -287,7 +292,54 @@ void HTiMenuModList() {
       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // Show mod name.
-    ImGui::TextColored(modNameColor, "%s", manifest.modName.data());
+    ImGui::TextColored(
+      failed ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f) : modNameColor,
+      "%s", manifest.modName.data());
+
+    if (failed) {
+      char buf[256];
+      const char *why;
+      switch (manifest.status) {
+      case ModStatus_DllErr:
+        // The error code is spelled out here rather than pointing at a log,
+        // because LOG*() compiles to nothing outside the debug build - the
+        // person seeing this has no log to be sent to.
+        switch (manifest.loadError) {
+        case ERROR_PROC_NOT_FOUND:
+          // Deliberately does NOT promise that a newer loader fixes it. 127
+          // means some procedure was missing - it may be one of OUR exports,
+          // or one in any dependency the mod pulls in, and nothing here can
+          // tell those apart. Keep the number so it can be looked up.
+          why = "Failed to load (127): incompatible loader or a missing"
+                " dependency - a required function was not found.";
+          break;
+        case ERROR_MOD_NOT_FOUND:
+          why = "Failed to load: the DLL, or something it depends on, is"
+                " missing.";
+          break;
+        case ERROR_BAD_EXE_FORMAT:
+          why = "Failed to load: wrong architecture.";
+          break;
+        default:
+          snprintf(buf, sizeof(buf),
+                   "Failed to load (Windows error %lu).", manifest.loadError);
+          why = buf;
+          break;
+        }
+        break;
+      case ModStatus_MissingDep:  why = "A dependency is not installed."; break;
+      case ModStatus_MismatchDep: why = "A dependency is the wrong version."; break;
+      case ModStatus_CycleDep:    why = "Dependency loop."; break;
+      case ModStatus_RemoveByDep: why = "A dependency was discarded."; break;
+      case ModStatus_Disabled:    why = "Disabled."; break;
+      default:                    why = "Not loaded."; break;
+      }
+      ImGui::PushStyleColor(ImGuiCol_Text, modDescColor);
+      ImGui::TextWrapped("%s", why);
+      ImGui::PopStyleColor();
+      ImGui::EndChild();
+      continue;
+    }
 
     // Show mod description.
     ImGui::PushStyleColor(ImGuiCol_Text, modDescColor);

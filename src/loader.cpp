@@ -88,6 +88,70 @@ bool ModManifest::readFromFile(
   return ret;
 }
 
+// Resource type and name the mod metadata is published under. A string name
+// rather than an integer id, so no toolchain-assigned ordinal can collide.
+//
+// RT_RCDATA itself is MAKEINTRESOURCE(10), which resolves to the ANSI form
+// unless UNICODE is defined - and this project does not define it - so it
+// cannot be handed to FindResourceW. Spell the wide form explicitly.
+#define HTML_MANIFEST_RESOURCE L"HTMODMANIFEST"
+#define HTML_MANIFEST_RESTYPE  MAKEINTRESOURCEW(10)
+
+bool ModManifest::readFromModule(
+  const std::wstring &modFolderName,
+  const std::wstring &dllPath
+) {
+  // LOAD_LIBRARY_AS_DATAFILE maps the image as data: no DllMain, no imports
+  // resolved, no code executed. That is the whole point - a mod whose imports
+  // cannot bind still answers "what are you" here, which is the difference
+  // between a named failure and an invisible one.
+  HMODULE hMod = LoadLibraryExW(
+    dllPath.c_str(),
+    nullptr,
+    LOAD_LIBRARY_AS_DATAFILE);
+  if (!hMod)
+    return false;
+
+  bool ret = false;
+  HRSRC res = FindResourceW(hMod, HTML_MANIFEST_RESOURCE, HTML_MANIFEST_RESTYPE);
+
+  if (res) {
+    DWORD size = SizeofResource(hMod, res);
+    HGLOBAL handle = LoadResource(hMod, res);
+    const char *data = handle
+      ? reinterpret_cast<const char *>(LockResource(handle))
+      : nullptr;
+
+    if (data && size) {
+      // The resource is NOT null-terminated, and cJSON_Parse expects a C
+      // string. Parsing in place would read past the resource into whatever
+      // follows it in .rsrc.
+      std::string content(data, size);
+
+      cJSON *json = cJSON_Parse(content.c_str());
+      if (json) {
+        // The module carrying this manifest IS the mod, so `main` is neither
+        // present nor wanted - a filename inside the file it names could only
+        // ever disagree with reality. Setting paths.dll here is what tells
+        // read() not to look for one.
+        paths.folder = HTiPathJoin({std::wstring(gPathModsWide), modFolderName});
+        paths.dll = dllPath;
+
+        ret = read(json);
+        cJSON_Delete(json);
+      } else {
+        LOGW("Malformed HTMODMANIFEST resource in: %ls\n", dllPath.c_str());
+      }
+    }
+  }
+
+  // Frees the data-file mapping. LockResource pointers die with it, which is
+  // why the bytes were copied above rather than kept.
+  FreeLibrary(hMod);
+
+  return ret;
+}
+
 bool ModManifest::read(
   const cJSON *json
 ) {
@@ -105,23 +169,30 @@ bool ModManifest::read(
   }
 
   // Get dll path from manifest.
-  const char *parsedStr = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "main"));
-  if (!parsedStr) {
-    LOGW("Missing dll path of: %ls\n", manifestPath);
-    return false;
-  }
+  //
+  // Skipped entirely when paths.dll is already set, which is the case for a
+  // manifest read out of the module's own resources: the file we opened IS the
+  // mod, so there is no pointer to follow and nothing to validate. Only the
+  // sidecar path needs `main`, and for that path it stays mandatory.
+  if (paths.dll.empty()) {
+    const char *parsedStr = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(json, "main"));
+    if (!parsedStr) {
+      LOGW("Missing dll path of: %ls\n", manifestPath);
+      return false;
+    }
 
-  // Dll path must not be an absolute path.
-  std::wstring dllPathOrigin = HTiUtf8ToWstring(parsedStr);
-  if (HTiPathIsAbsolute(dllPathOrigin))
-    goto InvalidDllPath;
+    // Dll path must not be an absolute path.
+    std::wstring dllPathOrigin = HTiUtf8ToWstring(parsedStr);
+    if (HTiPathIsAbsolute(dllPathOrigin))
+      goto InvalidDllPath;
 
-  // Dll must be located in `mods/` folder.
-  paths.dll = HTiPathJoin({paths.folder, dllPathOrigin});
-  if (!validateDllPath(paths.dll)) {
+    // Dll must be located in `mods/` folder.
+    paths.dll = HTiPathJoin({paths.folder, dllPathOrigin});
+    if (!validateDllPath(paths.dll)) {
 InvalidDllPath:
-    LOGW("Invalid dll path of: %ls\n", manifestPath);
-    return false;
+      LOGW("Invalid dll path of: %ls\n", manifestPath);
+      return false;
+    }
   }
 
   // Get mod version.
@@ -193,7 +264,54 @@ static void scanMods() {
     LOGI("Found potential mod folder: %ls\n", findData.cFileName);
 
     ModManifest manifest;
-    if (!manifest.readFromFile(findData.cFileName))
+
+    // Resource first, sidecar second.
+    //
+    // A mod folder may contain several DLLs (a mod plus its own helper
+    // libraries), and only the mod itself carries the manifest resource, so
+    // every DLL is offered to the reader and the first one that answers wins.
+    // Nothing else identifies which is which without a sidecar to say so.
+    bool found = false;
+    bool ambiguous = false;
+    std::wstring dllGlob = HTiPathJoin(
+      {std::wstring(gPathModsWide), findData.cFileName, L"\\*.dll"});
+    WIN32_FIND_DATAW dllData;
+    HANDLE hFindDll = FindFirstFileW(dllGlob.data(), &dllData);
+    if (hFindDll != INVALID_HANDLE_VALUE) {
+      do {
+        if (dllData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+          continue;
+        std::wstring dllPath = HTiPathJoin(
+          {std::wstring(gPathModsWide), findData.cFileName,
+           std::wstring(L"\\") + dllData.cFileName});
+        ModManifest candidate;
+        if (candidate.readFromModule(findData.cFileName, dllPath)) {
+          if (found) {
+            // Two DLLs in one folder both claiming to be the mod. Refuse
+            // rather than pick: FindFirstFileW/FindNextFileW define no
+            // ordering, so "first wins" would resolve differently on different
+            // machines or after a defragment - a mod that works here and not
+            // there, with nothing to point at.
+            //
+            // The realistic cause is a build directory copied wholesale: an
+            // unstripped or backup copy of the mod carries the same resource
+            // as the real one.
+            LOGW("Folder %ls has more than one mod DLL with a manifest "
+                 "resource - skipping it. Leave exactly one.\n",
+                 findData.cFileName);
+            ambiguous = true;
+            break;
+          }
+          manifest = candidate;
+          found = true;
+        }
+      } while (FindNextFileW(hFindDll, &dllData));
+      FindClose(hFindDll);
+    }
+
+    if (ambiguous)
+      continue;
+    if (!found && !manifest.readFromFile(findData.cFileName))
       continue;
     if (!HTiFileExists(manifest.paths.dll.data()))
       continue;
@@ -360,10 +478,22 @@ static void expandMods(
 
     // Load library.
     hMod = LoadLibraryW(mod->paths.dll.c_str());
-    if (hMod)
+    if (hMod) {
       LOGI("Loaded mod %s.\n", modName);
-    else
-      LOGW("Load mod %s failed: No such file.\n", modName);
+    } else {
+      // Report the real reason. "No such file" was printed for EVERY failure,
+      // which is actively misleading for the most likely one: a mod built
+      // against a newer loader fails with ERROR_PROC_NOT_FOUND because an
+      // import cannot bind, and the file is sitting right there.
+      DWORD err = GetLastError();
+      mod->loadError = static_cast<unsigned long>(err);
+      LOGW("Load mod %s failed: error %lu\n", modName, mod->loadError);
+
+      // The enum has carried this value since before it meant anything. Now a
+      // mod that cannot load stays in the list, named, with a reason - which
+      // is the whole point of reading its metadata without loading it.
+      mod->setStatus(ModStatus_DllErr);
+    }
 
     // Restore saved dll searching directory.
     if (needed)
