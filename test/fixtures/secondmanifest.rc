@@ -1,0 +1,2 @@
+/* A second DLL claiming an identity, for the ambiguous-folder case. */
+HTMODMANIFEST RCDATA "manifest_second.json"

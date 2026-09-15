@@ -1,0 +1,12 @@
+{
+  "package_name": "fixture.resource",
+  "version": "2.3.4",
+  "game_edition": -1,
+  "mod_name": "Resource Fixture",
+  "description": "Carries its manifest as an RT_RCDATA resource.",
+  "main": "withmanifest.dll",
+  "dependencies": {},
+  "author": "conformance",
+  "license": "MIT",
+  "website": ""
+}

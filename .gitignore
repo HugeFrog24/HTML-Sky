@@ -8,6 +8,13 @@
 *.bak
 *.ini
 test*
+# ...but not the conformance suite. `test*` was written to catch stray scratch
+# binaries and it swallowed test/ whole: the suite built and passed here and
+# would never have been committed. The directory has to be un-ignored before
+# anything inside it can be, because git does not descend into an excluded
+# directory. Build output still lands in dist/, which stays ignored.
+!test/
+!test/**
 # zlib only. It is prebuilt and carried as-is: pure C with no thread-model
 # dependency, so one archive links under any toolchain. leveldb is deliberately
 # NOT un-ignored - it is compiled from libraries/leveldb/src/ by `make libs`,

@@ -364,7 +364,10 @@ bool CheckEdition(unsigned declared, unsigned running) {
   return declared == running;
 }
 
-Result InspectFolder(const std::wstring &modsRoot, const std::wstring &folderName) {
+namespace {
+
+Result inspectFolderImpl(const std::wstring &modsRoot,
+                         const std::wstring &folderName) {
   Result out;
 
   // Only folderName is ever joined, and it came from the filesystem. Nothing a
@@ -373,10 +376,29 @@ Result InspectFolder(const std::wstring &modsRoot, const std::wstring &folderNam
   const std::wstring glob = HTiPathJoin({folder, L"\\*.dll"});
 
   WIN32_FIND_DATAW found;
+  SetLastError(0);
   HANDLE search = FindFirstFileW(glob.c_str(), &found);
   unsigned examined = 0;
   bool parsedOne = false;
   Result winner;
+
+  // The same absent-vs-unreadable split fetchManifest makes, and it was missing
+  // here: the failure was skipped over with no else, so a folder that is GONE
+  // and a folder that cannot be OPENED both reported "nothing here claims to be
+  // a mod". ERROR_FILE_NOT_FOUND is the honest empty case - the folder is there
+  // and holds no DLL. ERROR_PATH_NOT_FOUND means the folder itself is not
+  // there, and anything else (ERROR_ACCESS_DENIED above all) means we could not
+  // look, which is not the same as having looked and found nothing.
+  if (search == INVALID_HANDLE_VALUE) {
+    const DWORD err = GetLastError();
+    if (err != ERROR_FILE_NOT_FOUND) {
+      out.outcome = Outcome::IoError;
+      out.detail = err == ERROR_PATH_NOT_FOUND
+                     ? "this folder is not there any more"
+                     : "this folder could not be read";
+      return out;
+    }
+  }
 
   if (search != INVALID_HANDLE_VALUE) {
     do {
@@ -575,6 +597,24 @@ Result InspectFolder(const std::wstring &modsRoot, const std::wstring &folderNam
   }
 
   out.outcome = Outcome::Ok;
+  return out;
+}
+
+}
+
+// The header promises dllPath is empty unless Ok, and one path broke that
+// promise: a manifest naming "..\\..\\..\\windows\\system32\\kernel32.dll" was
+// correctly REFUSED, and the refused result still carried the escaping path.
+// The scanner serialises dllPath for every outcome, and the launcher read,
+// hashed and listed the folder of whatever it was handed - so mod-controlled
+// text decided which file got read, on a result that said "no".
+//
+// Enforced here rather than at each of the fifteen returns above, because a
+// rule applied at one exit cannot be forgotten by a branch added later.
+Result InspectFolder(const std::wstring &modsRoot, const std::wstring &folderName) {
+  Result out = inspectFolderImpl(modsRoot, folderName);
+  if (out.outcome != Outcome::Ok)
+    out.dllPath.clear();
   return out;
 }
 

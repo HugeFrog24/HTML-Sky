@@ -84,7 +84,7 @@ CFLAGS += -DNDEBUG -DHTMLAPIATTR=__declspec(dllexport)
 vpath %.c $(SRC_DIRS)
 vpath %.cpp $(SRC_DIRS)
 
-.PHONY: all clean libs clean_libs clean_all scanner
+.PHONY: all clean libs clean_libs clean_all scanner test clean_test
 
 # The launcher's read-only scanner, built from the SAME ModInspect core the DLL
 # links. That is the entire reason it exists: a launcher that installs and
@@ -133,6 +133,47 @@ scanner: $(DIST_DIR) libs
 	@$(CXX) --std=c++17 $(CFLAGS) -municode $(SCANNER_SRC) \
 		./libraries/cJSON/cJSON.o -o $(SCANNER_TARGET)
 	@echo Done.
+
+# Conformance tests for the shared inspection core.
+#
+# The fixture DLLs are built here, with the SAME compiler that builds the
+# loader, because what is under test is what Win32 reports about a real PE. A
+# hand-written byte array pretending to be a DLL would test the parser against
+# the author's idea of a PE rather than against one the toolchain emits - and
+# the bug this suite exists for (1812 on a PE with no .rsrc section at all) is
+# invisible to any fixture that was not produced that way.
+TEST_DIR = ./test
+TEST_FIX = $(TEST_DIR)/fixtures
+TEST_OUT = $(DIST_DIR)/test
+TEST_TARGET = $(TEST_OUT)/modinspect_test.exe
+TEST_SRC = $(TEST_DIR)/modinspect_test.cpp $(SRC_DIR)/modinspect.cpp \
+	$(SRC_DIR)/utils/semver.cpp $(SRC_DIR)/utils/path.cpp
+
+# Both forms on purpose: which shell make picks here depends on whether an sh is
+# on PATH, and the two disagree about backslashes. Each is allowed to fail.
+$(TEST_OUT):
+	-@mkdir -p $(TEST_OUT)
+	-@mkdir $(subst /,\,$(TEST_OUT))
+
+test: $(DIST_DIR) $(TEST_OUT) libs
+	@echo Building test fixtures ...
+	@$(CC) -shared -o $(TEST_OUT)/noresource.dll $(TEST_FIX)/stub.c
+	@windres -I$(TEST_FIX) $(TEST_FIX)/withmanifest.rc $(TEST_OUT)/withmanifest.res.o
+	@$(CC) -shared -o $(TEST_OUT)/withmanifest.dll $(TEST_FIX)/stub.c $(TEST_OUT)/withmanifest.res.o
+	@windres -I$(TEST_FIX) $(TEST_FIX)/secondmanifest.rc $(TEST_OUT)/secondmanifest.res.o
+	@$(CC) -shared -o $(TEST_OUT)/secondmanifest.dll $(TEST_FIX)/stub.c $(TEST_OUT)/secondmanifest.res.o
+	@windres -I$(TEST_FIX) $(TEST_FIX)/otherresource.rc $(TEST_OUT)/otherresource.res.o
+	@$(CC) -shared -o $(TEST_OUT)/otherresource.dll $(TEST_FIX)/stub.c $(TEST_OUT)/otherresource.res.o
+	@windres -I$(TEST_FIX) $(TEST_FIX)/broken.rc $(TEST_OUT)/broken.res.o
+	@$(CC) -shared -o $(TEST_OUT)/broken.dll $(TEST_FIX)/stub.c $(TEST_OUT)/broken.res.o
+	@echo Building tests ...
+	@$(CXX) --std=c++17 $(CFLAGS) -municode $(TEST_SRC) \
+		./libraries/cJSON/cJSON.o -o $(TEST_TARGET)
+	@echo Running tests ...
+	@$(TEST_TARGET) $(TEST_OUT) $(TEST_OUT)/scratch
+
+clean_test:
+	-@del .\dist\test\*.o .\dist\test\*.dll .\dist\test\*.exe
 
 libs:
 	@echo Compiling libraries ...

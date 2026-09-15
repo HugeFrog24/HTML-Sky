@@ -1,0 +1,2 @@
+/* Name HTMODMANIFEST, type RCDATA (10) - exactly what fetchManifest asks for. */
+HTMODMANIFEST RCDATA "manifest_ok.json"

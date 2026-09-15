@@ -1,0 +1,2 @@
+/* A manifest resource that does not parse - the unparseable-sibling case. */
+HTMODMANIFEST RCDATA "manifest_broken.json"

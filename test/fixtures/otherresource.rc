@@ -1,0 +1,2 @@
+/* Has a resource section, but no HTMODMANIFEST: the 1813 shape. */
+SOMETHINGELSE RCDATA "manifest_ok.json"
