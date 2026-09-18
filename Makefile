@@ -84,7 +84,11 @@ CFLAGS += -DNDEBUG -DHTMLAPIATTR=__declspec(dllexport)
 vpath %.c $(SRC_DIRS)
 vpath %.cpp $(SRC_DIRS)
 
-.PHONY: all clean libs clean_libs clean_all scanner test clean_test
+# Every one of these must be listed. scanner, wrapper and test each share a name
+# with a DIRECTORY in the repo root, so without .PHONY make finds that directory,
+# decides the target is already up to date, and exits 0 having built nothing -
+# silently, with no output to suggest anything was skipped.
+.PHONY: all clean libs clean_libs clean_all scanner wrapper test clean_test
 
 # The launcher's read-only scanner, built from the SAME ModInspect core the DLL
 # links. That is the entire reason it exists: a launcher that installs and
@@ -97,6 +101,16 @@ vpath %.cpp $(SRC_DIRS)
 SCANNER_TARGET = $(DIST_DIR)/htmodscan.exe
 SCANNER_SRC = ./scanner/main.cpp $(SRC_DIR)/modinspect.cpp \
 	$(SRC_DIR)/utils/semver.cpp $(SRC_DIR)/utils/path.cpp
+
+# The Steam %command% wrapper. Outside src/ for the same reason as the scanner:
+# it has its own entry point, and the object globs above would otherwise link it
+# into winhttp.dll.
+#
+# It links nothing from src/. That is deliberate - the wrapper runs BEFORE the
+# game exists and must not share state, allocators or globals with the loader it
+# is arranging to have loaded.
+WRAPPER_TARGET = $(DIST_DIR)/tibik-wrapper.exe
+WRAPPER_SRC = ./wrapper/main.cpp
 
 # The scanner's rule is further down on purpose: make takes the FIRST target in
 # the file as the default goal, and putting it here quietly made a bare `make`
@@ -132,6 +146,15 @@ scanner: $(DIST_DIR) libs
 	@echo Building scanner ...
 	@$(CXX) --std=c++17 $(CFLAGS) -municode $(SCANNER_SRC) \
 		./libraries/cJSON/cJSON.o -o $(SCANNER_TARGET)
+	@echo Done.
+
+# No `libs` prerequisite: the wrapper links none of them, and requiring the
+# vendored libraries to be built first would make a 300-line helper wait on
+# leveldb. -mwindows so Steam does not flash a console on every launch.
+wrapper: $(DIST_DIR)
+	@echo Building wrapper ...
+	@$(CXX) --std=c++17 $(CFLAGS) -municode -mwindows $(WRAPPER_SRC) \
+		-o $(WRAPPER_TARGET)
 	@echo Done.
 
 # Conformance tests for the shared inspection core.
