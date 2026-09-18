@@ -146,7 +146,8 @@ TEST_DIR = ./test
 TEST_FIX = $(TEST_DIR)/fixtures
 TEST_OUT = $(DIST_DIR)/test
 TEST_TARGET = $(TEST_OUT)/modinspect_test.exe
-TEST_SRC = $(TEST_DIR)/modinspect_test.cpp $(SRC_DIR)/modinspect.cpp \
+TEST_SRC = $(TEST_DIR)/modinspect_test.cpp $(TEST_DIR)/modroot_test.cpp \
+	$(SRC_DIR)/modinspect.cpp \
 	$(SRC_DIR)/utils/semver.cpp $(SRC_DIR)/utils/path.cpp
 
 # The same shape as $(DIST_DIR) above: one cmd-style mkdir, tolerated when the

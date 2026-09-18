@@ -10,6 +10,7 @@
 #include "proxy/winhttp-proxy.h"
 #include "utils/texts.h"
 #include "htinternal.hpp"
+#include "modroot.hpp"
 
 static HMODULE hWinHttp;
 
@@ -38,6 +39,20 @@ static void narrowFromWide(
   const wchar_t *src
 ) {
   WideCharToMultiByte(CP_ACP, 0, src, -1, dst, MAX_PATH, "?", nullptr);
+}
+
+// Whether the mod root was taken from the loader's own folder rather than the
+// game's. Recorded rather than logged, because initPaths() runs before the
+// logger exists - and this is the one fact worth reporting afterwards, since a
+// mod root in an unexpected place looks exactly like a fresh install.
+static i32 gModRootBesideLoader = 0;
+
+// The filesystem, as ModRoot::Choose() wants it. A thin adapter so the rule can
+// be tested against a table of directories instead of a disk.
+static int modRootFolderExists(
+  const wchar_t *path
+) {
+  return HTiFolderExists(path) ? 1 : 0;
 }
 
 static i32 initPaths(
@@ -72,9 +87,18 @@ static i32 initPaths(
     return 0;
   *p = 0;
 
-  wcscpy(gPathDataWide, gPathGameExeWide);
-  if (!appendW(gPathDataWide, L"\\htmodloader"))
-    return 0;
+  // The rule, and why it is the way it is, lives in modroot.hpp.
+  {
+    const ModRoot::Choice choice = ModRoot::Choose(
+      gPathDllWide, gPathGameExeWide, modRootFolderExists);
+    // appendW() used to be what kept this inside MAX_PATH. Choose() returns a
+    // std::wstring and cannot know about the fixed buffer, so the bound is
+    // re-imposed here rather than quietly lost in the refactor.
+    if (choice.root.size() >= MAX_PATH)
+      return 0;
+    wcscpy(gPathDataWide, choice.root.c_str());
+    gModRootBesideLoader = (choice.source == ModRoot::kFromLoader);
+  }
 
   wcscpy(gPathModsWide, gPathDataWide);
   if (!appendW(gPathModsWide, L"\\mods"))
@@ -138,9 +162,26 @@ BOOL APIENTRY DllMain(
 
     // No log file and console by default.
 #ifdef HTML_ENABLE_LOGGER
-    HTiInitLogger(L"html-log.log", 0);
+    // Absolute, under the mod root. A bare filename is resolved against the
+    // process cwd, which Steam sets to the game folder - so the log landed in
+    // Program Files even when everything else had been moved out of it, and it
+    // did not follow a portable root. initPaths() has already created this
+    // directory by the time we get here.
+    {
+      wchar_t logPath[MAX_PATH];
+      wcscpy(logPath, gPathDataWide);
+      wcscat(logPath, L"\\html-log.log");
+      HTiInitLogger(logPath, 0);
+    }
 #endif
     LOGI("HTML attatched.\n");
+    // Say where the mods and their data are being read from, and which of the
+    // two candidate roots won. Mods keep credentials under this path, so a
+    // silently different root is the difference between "my account is gone"
+    // and "the loader looked somewhere else"; only one of those is a bug, and
+    // the log has to be able to tell them apart.
+    LOGI("Mod root: %ls (%s)\n", gPathModsWide,
+         gModRootBesideLoader ? "beside the loader" : "beside the game exe");
 
     MH_Initialize();
 

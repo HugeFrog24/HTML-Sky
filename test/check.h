@@ -46,6 +46,17 @@ inline void fail(const char *file, int line, const std::string &what) {
 
 inline std::string show(const std::string &v) { return "\"" + v + "\""; }
 inline std::string show(const char *v) { return v ? show(std::string(v)) : "<null>"; }
+// Paths are wide throughout the loader, so a failure that cannot print one
+// sends you back to a debugger for something the harness already knows.
+// Non-ASCII degrades to '?' rather than dragging in a codepage conversion:
+// this is a failure message, and the tests using it compare paths exactly
+// anyway, so a lossy rendering cannot make a wrong value look right.
+inline std::string show(const std::wstring &v) {
+  std::string narrow;
+  narrow.reserve(v.size());
+  for (wchar_t c : v) narrow.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+  return "\"" + narrow + "\"";
+}
 inline std::string show(bool v) { return v ? "true" : "false"; }
 inline std::string show(int v) { return std::to_string(v); }
 inline std::string show(unsigned v) { return std::to_string(v); }
