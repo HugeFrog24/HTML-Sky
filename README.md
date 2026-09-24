@@ -1,11 +1,10 @@
 # HT's Mod Loader (single-mod fork)
 Use HTML to execute code before the game does.
 
-> **Archived.** This loader now lives in the Tibik source tree at
-> [`HugeFrog24/libtibik-srctree`](https://github.com/HugeFrog24/libtibik-srctree)
-> under `pc/loader/`, built there with CMake beside the mod it serves. This
-> repository is kept read-only as the record of its history; new work happens
-> in that tree. For the general-purpose loader that runs any mod, use
+> **Archived.** Work on this loader continues inside Tibik's own source tree,
+> which is not public, and the loader ships in the Windows zip of each
+> [Tibik release](https://github.com/HugeFrog24/libtibik/releases). For the
+> general-purpose loader that runs any mod, use
 > [upstream](https://github.com/HTMonkeyG/HTML-Sky).
 
 This is a fork of [HT's Mod Loader](https://github.com/HTMonkeyG/HTML-Sky)
