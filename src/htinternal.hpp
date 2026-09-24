@@ -61,7 +61,34 @@ void HTiLogW(
 // [SECTION] Mod loader globals.
 // ----------------------------------------------------------------------------
 
-#define HTiErrAndRet(e, v) (HTSetLastError(e), v)
+// Error codes. Partially the same as winerror.h
+typedef int HTError;
+enum HTError_ {
+  HTError_Success = 0,
+  // ERROR_ACCESS_DENIED.
+  HTError_AccessDenied = 5,
+  // ERROR_INVALID_HANDLE.
+  HTError_InvalidHandle = 6,
+  // ERROR_NOT_READY. The loader cannot serve this yet but may later - retry on
+  // a following frame rather than treating it as a failure.
+  HTError_NotReady = 21,
+  // ERROR_INVALID_PARAMETER.
+  HTError_InvalidParam = 87,
+  // ERROR_ALREADY_EXISTS.
+  HTError_AlreadyExists = 183,
+  // ERROR_NO_MORE_ITEMS.
+  HTError_NoMoreItems = 259,
+  // ERROR_NOT_FOUND.
+  HTError_NotFound = 1168,
+  // ERROR_INVALID_THREAD_ID. Called from a thread the API may not be called
+  // from - see the thread rule on the function that returned it.
+  HTError_InvalidThread = 1444
+};
+
+// Return `v`. The error code still names each failure at its call site, for
+// whoever reads the code; nothing records it any more. It went to a last-error
+// slot that only mods could read, and the one mod left never reads it.
+#define HTiErrAndRet(e, v) ((void)(e), (v))
 
 typedef std::mutex HTMutex;
 typedef std::shared_mutex HTMutexShared;
@@ -73,16 +100,13 @@ typedef std::lock_guard<HTMutex> HTLockMutex;
 
 extern HTGameStatus gGameStatus;
 extern char gPathDll[MAX_PATH]
-  , gPathGameExe[MAX_PATH]
-  , gPathData[MAX_PATH]
   , gPathMods[MAX_PATH]
   , gPathGuiIni[MAX_PATH];
 extern wchar_t gPathModsWide[MAX_PATH]
   , gPathDataWide[MAX_PATH]
   , gPathDllWide[MAX_PATH]
   , gPathGameExeWide[MAX_PATH];
-extern HANDLE gHeap
-  , gEventGuiInit;
+extern HANDLE gEventGuiInit;
 extern HMODULE gModLoaderHandle;
 
 // ----------------------------------------------------------------------------
@@ -190,19 +214,6 @@ std::wstring HTiPathNormalize(
 std::wstring HTiPathJoin(
   const std::vector<std::wstring> &);
 
-// Resolves a sequence of paths or path segments into an absolute path.
-std::wstring HTiPathResolve(
-  const std::vector<std::wstring> &);
-
-// Returns the relative path from `from` to `to` based on the current working
-// directory. If from and to each resolve to the same path (after calling
-// `HTiPathResolve()` on each), a zero-length string is returned.
-// If a zero-length string is passed as from or to, the current working directory
-// will be used instead of the zero-length strings.
-std::wstring HTiPathRelative(
-  const std::wstring &from,
-  const std::wstring &to);
-
 // Determines if the literal path is absolute.
 bool HTiPathIsAbsolute(
   const std::wstring &);
@@ -211,23 +222,14 @@ bool HTiPathIsAbsolute(
 // [SECTION] Mod loader functions.
 // ----------------------------------------------------------------------------
 
-// Scan and load all mods, then call the exported HTModOnInit() function of
-// each mod.
+// Load the one mod this loader serves (see loader.cpp), then call the exported
+// HTModOnInit() of the loader itself and of that mod.
 // This function is called after the game window has created.
 HTStatus HTiLoadMods();
-// Enable all mods, that is, call the exported HTModOnEnable() function of
-// each mod.
+// Call the exported HTModOnEnable() of each loaded mod - the loader itself, and
+// the tenant if it loaded.
 // This function is called after ImGui started rendering.
 HTStatus HTiEnableMods();
-// [Invalid] Load a mod and its dependencies.
-void HTiLoadSingleMod();
-// [Invalid] Unload a mod and its dependents.
-void HTiUnloadSingleMod();
-// [Invalid] Inject a dll.
-HTStatus HTiInjectDll(
-  const wchar_t *path);
-// [Invalid] Free a dll.
-HTStatus HTiRejectDll();
 
 // ----------------------------------------------------------------------------
 // [SECTION] Semantic version parser and comparator.
@@ -251,19 +253,6 @@ public:
     bool includePrerelease = false,
     bool rtl = false);
 
-  // Test if a version satisfies a range expression.
-  static bool satisfies(
-    const std::string &version,
-    const std::string &range,
-    bool loose = false,
-    bool includePrerelease = false);
-
-  static bool satisfies(
-    const HTiSemVer &ver,
-    const std::string &range,
-    bool loose = false,
-    bool includePrerelease = false);
-
   // Constructor.
   HTiSemVer();
   HTiSemVer(
@@ -279,14 +268,6 @@ public:
   // Format the version as a standard SemVer string.
   std::string write() const;
 
-  // Comparison operators
-  bool operator==(const HTiSemVer &other) const;
-  bool operator!=(const HTiSemVer &other) const;
-  bool operator<=(const HTiSemVer &other) const;
-  bool operator>=(const HTiSemVer &other) const;
-  bool operator<(const HTiSemVer &other) const;
-  bool operator>(const HTiSemVer &other) const;
-
   // Accessors.
   int getMajor() const { return major; }
   int getMinor() const { return minor; }
@@ -294,13 +275,7 @@ public:
   const std::vector<std::string> &getPrerelease() const { return prerelease; }
   const std::vector<std::string> &getBuild() const { return build; }
 
-  // Forward declaration.
-  friend class SemverCondition;
-
 private:
-  // Core comparison logic.
-  int compare(const HTiSemVer &other) const;
-
   // Internal parsing.
   bool parse(const std::string &input, bool loose);
 
@@ -312,13 +287,194 @@ private:
 };
 
 // ----------------------------------------------------------------------------
+// [SECTION] Hotkey types.
+//
+// Mod-facing once, in htmodloader.h. The loader still binds its own keys (the
+// menu toggle and the rebinding UI) and persists them in options.json, but no
+// mod calls the hotkey API any more, so the types live here.
+// ----------------------------------------------------------------------------
+
+// Modified from ImGui to keep compatibility.
+// NOTE: HTKeyCodes is not completely compatible with ImGuiKey, specially
+// in mouse inputs. Use HTKeyToImGuiKey() to convert to ImGuiKey.
+typedef int HTKeyCode;
+enum HTKeyCode_ {
+  HTKey_None = 0,
+
+  HTKey_NamedKey_BEGIN = 512,
+  HTKey_Tab = 512,
+  HTKey_LeftArrow,
+  HTKey_RightArrow,
+  HTKey_UpArrow,
+  HTKey_DownArrow,
+  HTKey_PageUp,
+  HTKey_PageDown,
+  HTKey_Home,
+  HTKey_End,
+  HTKey_Insert,
+  HTKey_Delete,
+  HTKey_Backspace,
+  HTKey_Space,
+  HTKey_Enter,
+  HTKey_Escape,
+  HTKey_LeftCtrl, HTKey_LeftShift, HTKey_LeftAlt, HTKey_LeftSuper,
+  HTKey_RightCtrl, HTKey_RightShift, HTKey_RightAlt, HTKey_RightSuper,
+  HTKey_Menu,
+  HTKey_0, HTKey_1, HTKey_2, HTKey_3, HTKey_4, HTKey_5, HTKey_6, HTKey_7, HTKey_8, HTKey_9,
+  HTKey_A, HTKey_B, HTKey_C, HTKey_D, HTKey_E, HTKey_F, HTKey_G, HTKey_H, HTKey_I, HTKey_J,
+  HTKey_K, HTKey_L, HTKey_M, HTKey_N, HTKey_O, HTKey_P, HTKey_Q, HTKey_R, HTKey_S, HTKey_T,
+  HTKey_U, HTKey_V, HTKey_W, HTKey_X, HTKey_Y, HTKey_Z,
+  HTKey_F1, HTKey_F2, HTKey_F3, HTKey_F4, HTKey_F5, HTKey_F6,
+  HTKey_F7, HTKey_F8, HTKey_F9, HTKey_F10, HTKey_F11, HTKey_F12,
+  HTKey_F13, HTKey_F14, HTKey_F15, HTKey_F16, HTKey_F17, HTKey_F18,
+  HTKey_F19, HTKey_F20, HTKey_F21, HTKey_F22, HTKey_F23, HTKey_F24,
+  // '
+  HTKey_Apostrophe,
+  // ,
+  HTKey_Comma,
+  // -
+  HTKey_Minus,
+  // .
+  HTKey_Period,
+  // /
+  HTKey_Slash,
+  // ;
+  HTKey_Semicolon,
+  // =
+  HTKey_Equal,
+  // [
+  HTKey_LeftBracket,
+  // \ (this text inhibit multiline comment caused by backslash)
+  HTKey_Backslash,
+  // ]
+  HTKey_RightBracket,
+  // `
+  HTKey_GraveAccent,
+  HTKey_CapsLock,
+  HTKey_ScrollLock,
+  HTKey_NumLock,
+  HTKey_PrintScreen,
+  HTKey_Pause,
+  HTKey_Keypad0, HTKey_Keypad1, HTKey_Keypad2, HTKey_Keypad3, HTKey_Keypad4,
+  HTKey_Keypad5, HTKey_Keypad6, HTKey_Keypad7, HTKey_Keypad8, HTKey_Keypad9,
+  HTKey_KeypadDecimal,
+  HTKey_KeypadDivide,
+  HTKey_KeypadMultiply,
+  HTKey_KeypadSubtract,
+  HTKey_KeypadAdd,
+  HTKey_KeypadEnter,
+  HTKey_KeypadEqual,
+  // Available on some keyboard/mouses. Often referred as "Browser Back"
+  HTKey_AppBack,
+  HTKey_AppForward,
+  // Non-US backslash.
+  HTKey_Oem102,
+
+  // Mouse inputs.
+  HTKey_Mouse_BEGIN,
+  HTKey_MouseLeft = HTKey_Mouse_BEGIN,
+  HTKey_MouseRight,
+  HTKey_MouseMiddle,
+  HTKey_MouseX1,
+  HTKey_MouseX2,
+  // HTML external mouse wheel key codes. These key codes is different from
+  // ImGuiKey_MouseWheelX or ImGuiKey_MouseWheelY, which uses analog inputs to
+  // indicate the direction, the key codes below act as a single physical key
+  // like those on keyboard.
+  HTKey_MouseWheelUp,
+  HTKey_MouseWheelDown,
+  // Most users won't have horizontal mouse wheels. Why did I add these?
+  HTKey_MouseWheelLeft,
+  HTKey_MouseWheelRight,
+  HTKey_Mouse_END,
+  HTKey_NamedKey_END = HTKey_Mouse_END,
+
+  HTKey_NamedKey_COUNT = HTKey_NamedKey_END - HTKey_NamedKey_BEGIN,
+
+  HTKeyMod_None = 0,
+  // Ctrl (non-macOS), Cmd (macOS)
+  HTKeyMod_Ctrl = 1 << 12,
+  // Shift
+  HTKeyMod_Shift = 1 << 13,
+  // Option/Menu
+  HTKeyMod_Alt = 1 << 14,
+  // Windows/Super (non-macOS), Ctrl (macOS)
+  HTKeyMod_Super = 1 << 15,
+};
+
+// Key event properties.
+typedef int HTKeyEventFlags;
+enum HTKeyEventFlags_ {
+  HTKeyEventFlags_None = 0,
+  HTKeyEventFlags_Down,
+  HTKeyEventFlags_Up,
+  HTKeyEventFlags_ChangeBind,
+  HTKeyEventFlags_MouseWheelDown,
+  HTKeyEventFlags_MouseWheelUp,
+  HTKeyEventFlags_MouseWheelLeft,
+  HTKeyEventFlags_MouseWheelRight,
+
+  // [Internal] Only for internal HTiHotkeyDispatch() function. The flags below
+  // will never be set on callbacks.
+  HTKeyEventFlags_Repeat = 1 << 16,
+  HTKeyEventFlags_Blocked = 1 << 17,
+  HTKeyEventFlags_Mask = 0xFFFF
+};
+
+// Key binding flags.
+typedef int HTHotkeyFlags;
+enum HTHotkeyFlags_ {
+  // Default value. The KeyDown events will be blocked when any ImGui window is
+  // focused, due to io.WantCaptureKeyboard and io.WantCaptureMouse flags. Set
+  // this flag when you want the key bind is only avaliable "in game".
+  HTHotkeyFlags_None = 0,
+  // If this flag is set, then the KeyDown events won't be blocked. For those
+  // key binds need to preview in game.
+  HTHotkeyFlags_NoBlock = 1 << 0,
+  // Reserved.
+  HTHotkeyFlags_BlockKeyUp = 1 << 1
+};
+
+// Determine how to intercept the key message.
+typedef int HTKeyEventPreventFlags;
+enum HTKeyEventPreventFlags_ {
+  // Pass the event as normal.
+  HTKeyEventPreventFlags_None = 0,
+  // Prevent the game from receiving the key message. Setting this flag in any
+  // of the callbacks will prevent events from being passed down.
+  HTKeyEventPreventFlags_Game = 1 << 0,
+  // Prevent the next event callback listening the key from receiving the key
+  // message. We do not ensure the order of the callbacks, so this flag may
+  // affect other mod's behaviour uncontrollable.
+  HTKeyEventPreventFlags_Next = 1 << 1,
+};
+
+// Key event data.
+typedef struct {
+  // [In] Handle of the key bind.
+  HTHandle hKey;
+  // [In] Key code of this event. For HTKeyEventFlags_Down and HTKeyEventFlags_Up,
+  // this field is the key pressed. For HTKeyEventFlags_ChangeBind, it is the
+  // previously bound key.
+  HTKeyCode key;
+  // [In] Key event flags, marked the type of this event.
+  HTKeyEventFlags flags;
+
+  // [Out] Determine how to intercept the key message.
+  HTKeyEventPreventFlags preventFlags;
+} HTKeyEvent;
+
+// Hotkey callback.
+typedef VOID (HTMLAPI *PFN_HTHotkeyCallback)(
+  HTKeyEvent *);
+
+// ----------------------------------------------------------------------------
 // [SECTION] Mod data and handle declarations.
 // ----------------------------------------------------------------------------
 
 // Handle types.
 typedef enum {
   HTHandleType_Invalid = 0,
-  HTHandleType_Manifest,
   HTHandleType_Mod,
   HTHandleType_Hotkey,
   HTHandleType_Command,
@@ -344,25 +500,14 @@ struct ModMeta {
   HTiSemVer version;
 };
 
-// Dependency of the mod.
-struct ModDependency {
-  // This name is used to identify mods and add dependencies, and must be
-  // unique for every mod.
-  std::string packageName;
-  // Mod dependency version constraints.
-  std::string constraint;
-};
-
 // Mod status.
 typedef int ModStatus;
 enum ModStatus_ {
   ModStatus_Ok = 0,
-  ModStatus_Disabled,
-  ModStatus_MissingDep,
-  ModStatus_MismatchDep,
-  ModStatus_CycleDep,
-  ModStatus_RemoveByDep,
+  // LoadLibraryW failed.
   ModStatus_DllErr,
+  // Never loaded: the folder holds nothing the loader will run. See `problem`.
+  ModStatus_Skipped,
 };
 
 struct ModRuntime;
@@ -404,12 +549,10 @@ struct ModManifest {
   std::string author;
   // Game edition the mod supports.
   HTGameEdition gameEditionFlags;
-  // Dependencies of the mod.
-  std::vector<ModDependency> dependencies;
   // Mod runtime data.
   //
   // These two carry default initializers because ModManifest is now COPIED:
-  // the scan loop builds a candidate, and assigning it memberwise reads every
+  // findTenant() builds a candidate, and assigning it memberwise reads every
   // scalar. Default-initialization leaves them indeterminate, so the copy was
   // undefined behaviour even though the destination is overwritten a few lines
   // later - the indeterminate READ has already happened by then.
@@ -420,13 +563,14 @@ struct ModManifest {
   ModRuntime *runtime = nullptr;
   // Mod status.
   ModStatus status = ModStatus_Ok;
-  // GetLastError() from a failed LoadLibraryW, or 0.
+  // Why the mod is not running, as one sentence for the Mods tab. Empty while
+  // it is.
   //
   // Carried on the manifest rather than only logged, because LOG*() compiles
   // to nothing outside the debug build - so in the build people actually run,
   // the log does not exist and the UI is the only place a reason can reach
   // anyone.
-  unsigned long loadError = 0;
+  std::string problem;
 };
 
 // HTML expected functions.
@@ -453,17 +597,6 @@ struct ModKeyBind {
   u08 isRegistered;
   // Key binding config.
   HTHotkeyFlags flags;
-  // True when the key is down.
-  u08 isDown;
-};
-
-// Option data saved by the mod. This struct will be stored at options.json
-struct ModCustomOption {
-  HTOptionType type;
-
-  bool valueBool;
-  double valueNumber;
-  std::string valueString;
 };
 
 // Mod runtime data. This struct is associated with mod handle.
@@ -471,26 +604,8 @@ struct ModRuntime {
   HMODULE handle;
   ModManifest *manifest;
   ModInternalFunctions loaderFunc;
-  // Shared functions.
-  std::map<std::string, PFN_HTVoidFunction> functions;
-  // True if the mod has explictly registered key bindings.
-  u08 hasRegisteredKeys;
   // Registered hotkeys.
   std::map<std::string, ModKeyBind> keyBinds;
-  // Customized options.
-  std::map<std::string, ModCustomOption> options;
-};
-
-// Contexts of a patch.
-struct ModPatch {
-  // Begin address of the patch.
-  void *addr;
-  // Original data of the patch.
-  std::vector<u08> original;
-  // Patch data to be set.
-  std::vector<u08> patched;
-  // Owner of this patch.
-  HMODULE owner;
 };
 
 // Contexts of a hook.
@@ -507,11 +622,6 @@ struct ModHook {
   HMODULE owner;
   // The status of the hook.
   bool isEnabled;
-  // [Invalid] The binary data of the leading JMP instructions.
-  ModPatch *header;
-  // [Invalid] Hook chain datas.
-  ModHook *next;
-  ModHook *prev;
   // Debug only.
   std::string name;
 };
@@ -574,10 +684,6 @@ static inline bool HTiIsExecutableAddr(
 
   return true;
 }
-
-// Remove all event callbacks registered by the mod.
-void HTiRemoveAllEventCallbacksOf(
-  HMODULE hModuleOwner);
 
 // Find all hooks of the given mod.
 std::vector<ModHook *> HTiAsmHookFindFor(
@@ -717,8 +823,7 @@ int HTiBackendSetupAll();
 void HTiSetGameStatus(
   HTGameStatus *);
 
-// Scan and load mods into the game, then initialize all loaded mods. Called by
-// backends.
+// Load options, then the one mod, and initialize it. Called by backends.
 void HTiSetupAll();
 
 // Register the loader itself as a single mod. The package name of the loader
@@ -757,7 +862,6 @@ void HTiToggleMenuState(
 
 // Submenus.
 void HTiMenuAbouts();
-void HTiMenuConsole();
 void HTiMenuModList();
 void HTiMenuSettings();
 
@@ -766,19 +870,6 @@ void HTiWindowDebugger(
   bool *show);
 void HTiWindowMain(
   bool *show);
-
-// Console functions.
-void HTiClearConsole();
-void HTiRenderConsoleTexts();
-void HTiConsoleScrollEnd();
-void HTiAddConsoleLineV(
-  bool raw,
-  const char *fmt,
-  va_list args);
-void HTiAddConsoleLine(
-  bool raw,
-  const char *fmt,
-  ...);
 
 #ifdef HTML_ENABLE_DEBUGGER
 
@@ -821,11 +912,31 @@ void HTiHotkeyDispatch(
 void HTiHotkeyUpdateCooldown();
 void HTiHotkeySetCooldown();
 
-// ----------------------------------------------------------------------------
-// [SECTION] LevelDB functions.
-// ----------------------------------------------------------------------------
+// The loader's own key bindings: the menu toggle and the rebinding UI. These
+// were mod-facing, and kept their names when no mod called them any more.
 
-i32 HTiInitLDB();
-i32 HTiDeinitLDB();
+// Get the name string of a key code.
+LPCSTR HTMLAPI HTHotkeyGetName(
+  HTKeyCode key);
+// Shortcut for passing HTHotkeyFlags_None to HTHotkeyRegisterEx().
+HTHandle HTMLAPI HTHotkeyRegister(
+  HMODULE hModule,
+  LPCSTR name,
+  HTKeyCode defaultCode);
+// Register a single key bind.
+HTHandle HTMLAPI HTHotkeyRegisterEx(
+  HMODULE hModule,
+  LPCSTR name,
+  HTKeyCode defaultCode,
+  HTHotkeyFlags flags);
+// Change the bound key for a hotkey. HTKey_None unbinds it.
+HTStatus HTMLAPI HTHotkeyBind(
+  HTHandle hKey,
+  HTKeyCode keyCode);
+// Register a callback for monitoring key state switching. A later call for
+// the same handle replaces the callback.
+HTStatus HTMLAPI HTHotkeyListen(
+  HTHandle hKey,
+  PFN_HTHotkeyCallback callback);
 
 #endif

@@ -1,5 +1,10 @@
 // ----------------------------------------------------------------------------
-// Assembly patch and hook APIs of HT's Mod Loader.
+// Hook APIs of HT's Mod Loader.
+//
+// Creating and enabling a raw hook is what Tibik imports. Hooking by export
+// name, hooking from a signature-scan record, disabling, and the patch calls
+// (never implemented - they returned HT_FAIL) went with the mods that were
+// meant to use them.
 // ----------------------------------------------------------------------------
 #include <windows.h>
 #include <mutex>
@@ -10,7 +15,6 @@
 #include "htinternal.hpp"
 
 static HTMutexShared gMutexAsm;
-static std::map<void *, ModPatch> gPatches;
 static std::map<void *, ModHook> gHooks;
 
 std::vector<ModHook *> HTiAsmHookFindFor(
@@ -88,73 +92,11 @@ HTMLAPIATTR HTStatus HTMLAPI HTAsmHookCreateRaw(
     origin);
 }
 
-HTMLAPIATTR HTStatus HTMLAPI HTAsmHookCreateAPI(
-  HMODULE hModuleOwner,
-  LPCWSTR module,
-  LPCSTR function,
-  LPVOID detour,
-  LPVOID *origin,
-  LPVOID *target
-) {
-  HTLockShared lock{gMutexAsm};
-  HTStatus s;
-  LPVOID origin_;
-  
-  if (!module || !function)
-    return HTiErrAndRet(HTError_InvalidParam, HT_FAIL);
-
-  // Get target module.
-  HMODULE hTarget = GetModuleHandleW(module);
-  if (!hTarget)
-    return HTiErrAndRet(HTError_ModuleNotFound, HT_FAIL);
-
-  // Get target function address.
-  LPVOID targetFn = (LPVOID)GetProcAddress(hTarget, function);
-  if (!targetFn)
-    return HTiErrAndRet(HTError_NotFound, HT_FAIL);
-
-  s = createHook(
-    hModuleOwner,
-    HTiWstringToUtf8(module) + ":" + function,
-    targetFn,
-    detour,
-    &origin_);
-  if (s != HT_SUCCESS)
-    // We directly pass the error code to the caller.
-    return s;
-
-  if (origin)
-    *origin = origin_;
-  if (target)
-    *target = targetFn;
-
-  return HTiErrAndRet(HTError_Success, HT_SUCCESS);
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTAsmHookCreate(
-  HMODULE hModuleOwner,
-  HTAsmFunction *func
-) {
-  HTLockShared lock{gMutexAsm};
-
-  if (!func)
-    return HTiErrAndRet(HTError_InvalidParam, HT_FAIL);
-
-  return createHook(
-    hModuleOwner,
-    func->name ? func->name : "<Unknown>",
-    func->fn,
-    func->detour,
-    &func->origin);
-}
-
 static HTStatus enableHook(
   HMODULE hModuleOwner,
-  LPVOID fn,
-  bool action
+  LPVOID fn
 ) {
-  MH_STATUS (*mh)(LPVOID)
-    , s;
+  MH_STATUS s;
 
   if (!hModuleOwner)
     return HTiErrAndRet(HTError_InvalidParam, HT_FAIL);
@@ -165,18 +107,14 @@ static HTStatus enableHook(
   if (hook == gHooks.end())
     // Not hooked.
     return HTiErrAndRet(HTError_InvalidParam, HT_FAIL);
-  
-  mh = action
-    ? MH_EnableHook
-    : MH_DisableHook;
 
   if (fn != HT_ALL_HOOKS) {
-    s = mh((LPVOID)fn);
+    s = MH_EnableHook((LPVOID)fn);
 
     if (s != MH_OK)
       return HTiErrAndRet(HTError_AccessDenied, HT_FAIL);
 
-    hook->second.isEnabled = action;
+    hook->second.isEnabled = true;
 
     return HTiErrAndRet(HTError_Success, HT_SUCCESS);
   }
@@ -185,12 +123,12 @@ static HTStatus enableHook(
     if (it->second.owner != hModuleOwner)
       continue;
 
-    s = mh((LPVOID)it->second.actual);
+    s = MH_EnableHook((LPVOID)it->second.actual);
 
     if (s != MH_OK)
       return HTiErrAndRet(HTError_AccessDenied, HT_FAIL);
 
-    it->second.isEnabled = action;
+    it->second.isEnabled = true;
   }
 
   return HTiErrAndRet(HTError_Success, HT_SUCCESS);
@@ -202,37 +140,5 @@ HTMLAPIATTR HTStatus HTMLAPI HTAsmHookEnable(
 ) {
   HTLockShared lock{gMutexAsm};
 
-  return enableHook(hModuleOwner, fn, true);
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTAsmHookDisable(
-  HMODULE hModuleOwner,
-  LPVOID fn
-) {
-  HTLockShared lock{gMutexAsm};
-
-  return enableHook(hModuleOwner, fn, false);
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTAsmPatchCreate(
-  HMODULE hModuleOwner,
-  LPVOID target,
-  LPCVOID data,
-  UINT64 size
-) {
-  return HT_FAIL;
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTAsmPatchEnable(
-  HMODULE hModuleOwner,
-  LPVOID target
-) {
-  return HT_FAIL;
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTAsmPatchDisable(
-  HMODULE hModuleOwner,
-  LPVOID target
-) {
-  return HT_FAIL;
+  return enableHook(hModuleOwner, fn);
 }

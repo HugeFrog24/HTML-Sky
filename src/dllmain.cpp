@@ -31,9 +31,9 @@ static i32 appendW(
 }
 
 // Narrow copy of a wide path in the active code page, for the two consumers
-// that genuinely need one: the public HTGetModFolder / HTGetGameExeFolder ABI,
-// and the ANSI RegEnumValueA hook. Deliberately produces the same bytes
-// GetModuleFileNameA used to, so neither contract changes.
+// that genuinely need one: the public HTGetModFolder ABI, and the ANSI
+// RegEnumValueA hook. Deliberately produces the same bytes GetModuleFileNameA
+// used to, so neither contract changes.
 static void narrowFromWide(
   char *dst,
   const wchar_t *src
@@ -105,8 +105,6 @@ static i32 initPaths(
     return 0;
 
   narrowFromWide(gPathDll, gPathDllWide);
-  narrowFromWide(gPathGameExe, gPathGameExeWide);
-  narrowFromWide(gPathData, gPathDataWide);
   narrowFromWide(gPathMods, gPathModsWide);
 
   // Create mod data folders.
@@ -187,17 +185,13 @@ BOOL APIENTRY DllMain(
 
     HTiBackendSetupAll();
 
-    // Create an independent heap.
-    gHeap = HeapCreate(0, 0, 0);
     gEventGuiInit = CreateEventA(nullptr, 0, 0, nullptr);
-    HTiInitLDB();
 
     CreateThread(
       nullptr, 0, onAttach, (LPVOID)hModule, 0, nullptr);
   } else if (dwReason == DLL_PROCESS_DETACH) {
     // Forcely update all options.
     HTiOptionsUpdate(114514.1919810f);
-    HTiDeinitLDB();
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
     FreeLibrary(hWinHttp);

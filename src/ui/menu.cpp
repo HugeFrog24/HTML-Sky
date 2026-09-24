@@ -1,7 +1,6 @@
-#include <stdarg.h>
-#include <stdio.h>
 #include "imgui.h"
 
+#include "utils/texts.h"
 #include "htinternal.hpp"
 
 // Widget widths.
@@ -9,15 +8,12 @@
 #define HOTKEY_RESET_WIDTH 65.0
 #define HOTKEY_BUTTONS_WIDTH (HOTKEY_DISPLAY_WIDTH + HOTKEY_RESET_WIDTH)
 
-#define CONSOLE_MAX_LINE 2048
-
 static const ImVec4 modNameColor(1, 1, 1, 1)
+  , modFailedColor(1.0f, 0.45f, 0.45f, 1.0f)
   , modDescColor(0.75, 0.75, 0.75, 1);
-static char gFakeBuffer[5] = {0}
-  , gConsoleInputBuffer[1024] = {0};
+static char gFakeBuffer[5] = {0};
 static float gMenuKeyBindMaxPosX = 0;
 static ModKeyBind *gActiveKey = nullptr;
-static ImVector<char *> gLines;
 
 // ----------------------------------------------------------------------------
 // [SECTION] Key binding implementations.
@@ -100,7 +96,7 @@ static void showSingleKeyBind(
   // Right align, show current key.
   ImGui::SetCursorPosX(cursor);
   if (gActiveKey == kb) {
-    // If 
+    // If
     HTKeyCode key;
     i32 t = keyBindWidget(&key);
     if (t) {
@@ -129,10 +125,17 @@ static void showSingleKeyBind(
 
 /**
  * Display key binds menu, and handle key bind modification.
+ *
+ * Only the loader's own keys are listed, because only the loader has any: the
+ * call a mod would register one with is not exported.
  */
 static void displayAndUpdateKeys() {
   f32 windowPadding = ImGui::GetStyle().WindowPadding.x
     , cursor;
+
+  ModRuntime *rt = HTiGetModRuntime(gModLoaderHandle);
+  if (!rt)
+    return;
 
   // Calculate cursor pos for right alignment.
   cursor = ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX();
@@ -141,80 +144,17 @@ static void displayAndUpdateKeys() {
     cursor = gMenuKeyBindMaxPosX;
 
   ImGui::PushTextWrapPos(500.0);
-  for (auto modIt = gModDataRuntime.begin(); modIt != gModDataRuntime.end(); modIt++) {
-    ModRuntime *rt = &modIt->second;
-    if (rt->keyBinds.empty() || !rt->hasRegisteredKeys)
+  for (auto keyIt = rt->keyBinds.begin(); keyIt != rt->keyBinds.end(); keyIt++) {
+    ModKeyBind *kb = &keyIt->second;
+    // Read back from options.json but never registered: a key nothing
+    // listens to.
+    if (!kb->isRegistered)
       continue;
-
-    // Mod name.
-    ImGui::SeparatorText(rt->manifest->modName.c_str());
-
-    // Keys.
-    for (auto keyIt = rt->keyBinds.begin(); keyIt != rt->keyBinds.end(); keyIt++) {
-      ModKeyBind *kb = &keyIt->second;
-      if (!kb->isRegistered)
-        continue;
-      ImGui::PushID((void *)kb);
-      showSingleKeyBind(kb, cursor);
-      ImGui::PopID();
-    }
+    ImGui::PushID((void *)kb);
+    showSingleKeyBind(kb, cursor);
+    ImGui::PopID();
   }
   ImGui::PopTextWrapPos();
-}
-
-// ----------------------------------------------------------------------------
-// [SECTION] Console implementations.
-// ----------------------------------------------------------------------------
-
-static int inputCallback(ImGuiInputTextCallbackData *data) {
-  return 0;
-}
-
-void HTiMenuConsole() {
-  ImGuiListClipper clipper;
-  f32 height;
-  bool reclaimFocus = false;
-
-  height = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing();
-  if (ImGui::BeginChild(
-    "ConsoleLog",
-    ImVec2(0, -height),
-    ImGuiChildFlags_NavFlattened,
-    ImGuiWindowFlags_HorizontalScrollbar
-  )) {
-    // Show texts.
-    if (ImGui::BeginPopupContextWindow()) {
-      if (ImGui::Selectable("Clear console"))
-        HTiClearConsole();
-      ImGui::EndPopup();
-    }
-
-    HTiRenderConsoleTexts();
-  }
-  ImGui::EndChild();
-  ImGui::Separator();
-
-  ImGui::SetNextItemWidth(-FLT_MIN);
-  if (ImGui::InputText(
-    "##ConsoleInput",
-    gConsoleInputBuffer,
-    IM_ARRAYSIZE(gConsoleInputBuffer),
-    ImGuiInputTextFlags_EnterReturnsTrue
-      | ImGuiInputTextFlags_EscapeClearsAll
-      | ImGuiInputTextFlags_CallbackCompletion
-      | ImGuiInputTextFlags_CallbackHistory,
-    inputCallback,
-    nullptr
-  )) {
-    // Pressed enter.
-    reclaimFocus = true;
-    HTiAddConsoleLine(false, "%s", gConsoleInputBuffer);
-    gConsoleInputBuffer[0] = 0;
-  }
-
-  ImGui::SetItemDefaultFocus();
-  if (reclaimFocus)
-    ImGui::SetKeyboardFocusHere(-1);
 }
 
 // ----------------------------------------------------------------------------
@@ -246,110 +186,37 @@ void HTiMenuSettings() {
 // ----------------------------------------------------------------------------
 
 /**
- * Render mod list tab item.
+ * Render the about tab item.
  */
 void HTiMenuAbouts() {
   ImGui::Text("HT's Mod Loader v" HTML_VERSION_NAME " by HTMonkeyG");
-  ImGui::Text("A general mod loader initially developed for Sky:CotL.");
+  ImGui::Text("This build is modified to run one mod, " HTTexts_TenantName ".");
   ImGui::TextLinkOpenURL(
     "<https://www.github.com/HTMonkeyG/HTML-Sky>",
     "https://www.github.com/HTMonkeyG/HTML-Sky");
 }
 
 /**
- * Render mod list tab item.
+ * Render the mods tab item: the one mod this loader runs, and whether it is
+ * running. A mod that is not shows the reason instead of its description,
+ * which in the build people actually run is the only place that reason goes.
  */
 void HTiMenuModList() {
-  i32 i = 0;
+  // HTiLoadMods() records the tenant whether or not it loads, so the entry is
+  // missing only until that has run.
+  auto it = gModDataLoader.find(HTTexts_TenantPackageName);
+  if (it == gModDataLoader.end())
+    return;
+  const ModManifest &tenant = it->second;
+  const bool running = tenant.runtime != nullptr;
 
-  if (!ImGui::BeginChild("##HTModList"))
-    return (void)ImGui::EndChild();
-  
-  ImGui::PushID("##HTModListItems");
-  ImVec2 size(0, ImGui::GetTextLineHeight() * 4 + 6);
-  ImVec2 spacing = ImGui::GetStyle().ItemSpacing;
-  spacing.y = 1;
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, spacing);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(3, 3));
-  for (auto it = gModDataLoader.begin(); it != gModDataLoader.end(); ++it, i++) {
-    ModManifest &manifest = it->second;
+  ImGui::TextColored(
+    running ? modNameColor : modFailedColor,
+    "%s", tenant.modName.c_str());
 
-    // A mod that failed to LOAD is still shown, with its reason. Skipping
-    // everything without a runtime made the most confusing failure invisible:
-    // the files are present, the metadata is readable, and the mod simply is
-    // not there. It was only skippable before because nothing could read a
-    // manifest without loading the DLL first.
-    const bool failed = !manifest.runtime;
-    if (failed && manifest.status == ModStatus_Ok)
-      continue;  // Never even reached load - nothing useful to say yet.
-
-    // Show mod info.
-    ImGuiID childId = ImGui::GetID((void *)(u64)i);
-    ImGui::BeginChild(
-      childId,
-      size,
-      ImGuiChildFlags_Borders,
-      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-
-    // Show mod name.
-    ImGui::TextColored(
-      failed ? ImVec4(1.0f, 0.45f, 0.45f, 1.0f) : modNameColor,
-      "%s", manifest.modName.data());
-
-    if (failed) {
-      char buf[256];
-      const char *why;
-      switch (manifest.status) {
-      case ModStatus_DllErr:
-        // The error code is spelled out here rather than pointing at a log,
-        // because LOG*() compiles to nothing outside the debug build - the
-        // person seeing this has no log to be sent to.
-        switch (manifest.loadError) {
-        case ERROR_PROC_NOT_FOUND:
-          // Deliberately does NOT promise that a newer loader fixes it. 127
-          // means some procedure was missing - it may be one of OUR exports,
-          // or one in any dependency the mod pulls in, and nothing here can
-          // tell those apart. Keep the number so it can be looked up.
-          why = "Failed to load (127): incompatible loader or a missing"
-                " dependency - a required function was not found.";
-          break;
-        case ERROR_MOD_NOT_FOUND:
-          why = "Failed to load: the DLL, or something it depends on, is"
-                " missing.";
-          break;
-        case ERROR_BAD_EXE_FORMAT:
-          why = "Failed to load: wrong architecture.";
-          break;
-        default:
-          snprintf(buf, sizeof(buf),
-                   "Failed to load (Windows error %lu).", manifest.loadError);
-          why = buf;
-          break;
-        }
-        break;
-      case ModStatus_MissingDep:  why = "A dependency is not installed."; break;
-      case ModStatus_MismatchDep: why = "A dependency is the wrong version."; break;
-      case ModStatus_CycleDep:    why = "Dependency loop."; break;
-      case ModStatus_RemoveByDep: why = "A dependency was discarded."; break;
-      case ModStatus_Disabled:    why = "Disabled."; break;
-      default:                    why = "Not loaded."; break;
-      }
-      ImGui::PushStyleColor(ImGuiCol_Text, modDescColor);
-      ImGui::TextWrapped("%s", why);
-      ImGui::PopStyleColor();
-      ImGui::EndChild();
-      continue;
-    }
-
-    // Show mod description.
-    ImGui::PushStyleColor(ImGuiCol_Text, modDescColor);
-    ImGui::TextWrapped("%s", manifest.description.data());
-    ImGui::PopStyleColor();
-
-    ImGui::EndChild();
-  }
-  ImGui::PopStyleVar(2);
-  ImGui::PopID();
-
-  ImGui::EndChild();
+  ImGui::PushStyleColor(ImGuiCol_Text, modDescColor);
+  ImGui::TextWrapped(
+    "%s",
+    running ? tenant.description.c_str() : tenant.problem.c_str());
+  ImGui::PopStyleColor();
 }

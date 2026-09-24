@@ -19,7 +19,6 @@ static HTiSemVer getSelfVersion() {
 static HTStatus HTMLAPI modOnInit(
   void *
 ) {
-  //HTCommRegFunction(gModLoaderHandle, "HT");
   hKeyMenuToggle = HTHotkeyRegister(
     gModLoaderHandle,
     "Toggle menu display",

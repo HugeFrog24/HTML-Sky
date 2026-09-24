@@ -1,6 +1,10 @@
 #define HTTexts_ModLoaderPackageName "htmodloader"
 #define HTTexts_ModLoaderName "HT's Mod Loader"
 #define HTTexts_ModLoaderDesc "HTML basic apis."
+// The one mod this loader runs (see loader.cpp).
+#define HTTexts_TenantPackageName "tibik"
+// Its name in the Mods tab when its own details could not be read.
+#define HTTexts_TenantName "Tibik"
 
 // Modified from ImGui.
 static const char *const HTKeyNames[] = {

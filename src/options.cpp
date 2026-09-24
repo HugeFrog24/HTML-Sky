@@ -40,64 +40,20 @@ static void deserializeModKeyBinds(
 }
 
 /**
- * "customized": {
- *   "<key name>": <value>,
- *   ...
- * }
- */
-static void deserializeModCustomOptions(
-  const cJSON *json,
-  ModRuntime *fakeRT
-) {
-  cJSON *customized = cJSON_GetObjectItemCaseSensitive(json, "customized")
-    , *item;
-
-  cJSON_ArrayForEach(item, customized) {
-    if (!item->string)
-      continue;
-
-    const char *keyName = item->string;
-    ModCustomOption &option = fakeRT->options[keyName];
-
-    if (cJSON_IsNumber(item)) {
-      option.type = HTOptionType_Double;
-      option.valueNumber = cJSON_GetNumberValue(item);
-      LOGI(
-        "  Loaded mod option '%s' (Double): %lf\n",
-        keyName,
-        option.valueNumber);
-    } else if (cJSON_IsString(item)) {
-      option.type = HTOptionType_String;
-      option.valueString = cJSON_GetStringValue(item);
-      LOGI(
-        "  Loaded mod option '%s' (String): '%s'\n",
-        keyName,
-        option.valueString.c_str());
-    } else if (cJSON_IsBool(item)) {
-      option.valueBool = !!cJSON_IsTrue(item);
-      option.type = HTOptionType_Bool;
-      LOGI(
-        "  Loaded mod option '%s' (Bool): '%d'\n",
-        keyName,
-        option.valueBool);
-    }
-  }
-}
-
-/**
  * "mod_options": {
  *   "<mod name>": {
  *     "key_bindings": {
  *       "<key name>": <key code>,
  *       ...
- *     },
- *     "customized": {
- *       "<key name>": <value>,
- *       ...
  *     }
  *   },
  *   ...
  * }
+ *
+ * A "customized" object beside "key_bindings" held values mods stored through
+ * the options API. That API went with the other mods, so an old file's
+ * "customized" is ignored here and dropped by the next save - nothing wrote
+ * one, since Tibik never called it.
  */
 static void deserializeAllMods(
   const cJSON *root
@@ -116,9 +72,6 @@ static void deserializeAllMods(
     ModRuntime *fakeRT = &gModLoaderOptions.modOptions[packageName];
 
     deserializeModKeyBinds(
-      item,
-      fakeRT);
-    deserializeModCustomOptions(
       item,
       fakeRT);
   }
@@ -151,12 +104,9 @@ void HTiOptionsLoadFor(
   auto pOption = &gModLoaderOptions.modOptions;
 
   auto modOption = pOption->find(packageName);
-  if (modOption != pOption->end()) {
+  if (modOption != pOption->end())
     // Assign key bindings.
     realRT->keyBinds = modOption->second.keyBinds;
-    // Assign saved options.
-    realRT->options = modOption->second.options;
-  }
 }
 
 void HTiOptionsMarkDirty() {
@@ -190,9 +140,6 @@ static void mergeOptionsForMod(
     fakeRT->keyBinds[it->first].key = it->second.key;
     fakeRT->keyBinds[it->first].isRegistered = 0;
   }
-
-  for (auto it = realRT->options.begin(); it != realRT->options.end(); it++)
-    fakeRT->options[it->first] = it->second;
 }
 
 // Serialize the saved options of the given mod to JSON.
@@ -201,50 +148,18 @@ static void saveOptionsForMod(
   const std::string &packageName
 ) {
   auto fakeRT = &gModLoaderOptions.modOptions[packageName];
-  cJSON *singleMod = cJSON_CreateObject()
-    , *keyBindings = cJSON_CreateObject()
-    , *customized = cJSON_CreateObject();
+  cJSON *singleMod = cJSON_CreateObject();
 
-  // Save key bindings.
+  // Save key bindings. Created only when there is something to put in it: an
+  // object that is never attached to the tree is never freed with it.
   if (!fakeRT->keyBinds.empty()) {
+    cJSON *keyBindings = cJSON_CreateObject();
     for (auto it = fakeRT->keyBinds.begin(); it != fakeRT->keyBinds.end(); it++)
       cJSON_AddNumberToObject(
         keyBindings,
         it->first.c_str(),
         (double)(int)it->second.key);
     cJSON_AddItemToObject(singleMod, "key_bindings", keyBindings);
-  }
-
-  // Save customized options.
-  if (!fakeRT->options.empty()) {
-    for (auto it = fakeRT->options.begin(); it != fakeRT->options.end(); it++) {
-      ModCustomOption &option = it->second;
-
-      switch(option.type) {
-        case HTOptionType_Bool:
-          cJSON_AddBoolToObject(
-            customized,
-            it->first.c_str(),
-            option.valueBool);
-          break;
-        case HTOptionType_Double:
-          cJSON_AddNumberToObject(
-            customized,
-            it->first.c_str(),
-            option.valueNumber);
-          break;
-        case HTOptionType_String:
-          cJSON_AddStringToObject(
-            customized,
-            it->first.c_str(),
-            option.valueString.c_str());
-          break;
-        default:
-          continue;
-      }
-    }
-
-    cJSON_AddItemToObject(singleMod, "customized", customized);
   }
 
   cJSON_AddItemToObject(modOptions, packageName.c_str(), singleMod);

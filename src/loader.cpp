@@ -1,106 +1,149 @@
 // ----------------------------------------------------------------------------
 // Mod loader of HT's Mod Loader.
+//
+// This build loads exactly one mod, Tibik. Upstream scans every folder under
+// the mods root, resolves dependencies between the mods it finds and drops
+// duplicates. With a single tenant that declares no dependencies all of that
+// is machinery with nothing to do, so it is gone: what is left finds the
+// tenant, loads it and calls its entry points.
 // ----------------------------------------------------------------------------
-#include <cmath>
-#include <algorithm>
-#include "cJSON.h"
-
+#include <stdio.h>
 #include "includes/htmodloader.h"
 #include "utils/texts.h"
 #include "htinternal.hpp"
 #include "modinspect.hpp"
 
+// The launcher installs a package into the folder named after it, so the
+// tenant's folder under the mods root is its package name.
+static const wchar_t *const kTenantFolder = L"" HTTexts_TenantPackageName;
 
-// Scan all potential mods.
-static void scanMods() {
-  HANDLE hFindFile;
-  WIN32_FIND_DATAW findData;
-  std::wstring modsFolderPath(gPathModsWide);
+// Record the tenant as not running, with the sentence the Mods tab shows for
+// it. Without this entry a tenant that was never found leaves nothing behind,
+// and the tab says nothing about the one mod it exists to report on.
+//
+// Keyed by the tenant's name, never by whatever the folder's DLL claims to be:
+// one claiming the loader's own name would overwrite the loader's entry.
+static void skipTenant(
+  const char *problem
+) {
+  ModManifest &stored = gModDataLoader[HTTexts_TenantPackageName];
+  stored.meta.packageName = HTTexts_TenantPackageName;
+  stored.modName = HTTexts_TenantName;
+  stored.setStatus(ModStatus_Skipped);
+  stored.problem = problem;
+  LOGW("Not loading %s: %s\n", HTTexts_TenantPackageName, problem);
+}
 
-  LOGI("Scanning mods...\n");
+// What the Mods tab says when ModInspect refuses the tenant's folder.
+//
+// Written here rather than taken from Result::detail, which is documented as
+// never shown to a player. And none of them says what to do about it: the
+// same folder holds the account key (identity.json), so a line that reads as
+// "clear it out and start over" can cost the player the account.
+//
+// There is no default case, so -Wswitch names any Outcome added later that
+// this does not cover.
+static const char *refusedProblem(
+  ModInspect::Outcome outcome
+) {
+  switch (outcome) {
+  case ModInspect::Outcome::Ok:
+    break;
+  case ModInspect::Outcome::NoManifest:
+    return "Not loaded: its folder has no mod in it.";
+  case ModInspect::Outcome::Malformed:
+    return "Not loaded: its details could not be read.";
+  case ModInspect::Outcome::Ambiguous:
+    return "Not loaded: more than one DLL in its folder claims to be the mod.";
+  case ModInspect::Outcome::LimitExceeded:
+    return "Not loaded: its details are too big to read.";
+  case ModInspect::Outcome::IoError:
+    return "Not loaded: its folder is missing or could not be read.";
+  }
+  return "Not loaded.";
+}
 
-  modsFolderPath += L"\\*";
-  hFindFile = FindFirstFileW(modsFolderPath.data(), &findData);
-  // FindFirstFileW reports failure with INVALID_HANDLE_VALUE, never NULL, so
-  // the old `!hFindFile` test could not fire. A missing or unreadable mods
-  // folder therefore fell straight into the loop below with findData never
-  // written - reading an uninitialised cFileName, and closing a handle that
-  // was never opened.
-  if (hFindFile == INVALID_HANDLE_VALUE)
-    return;
+// Find the tenant and record it for loading. Null when its folder is missing
+// or unreadable, when what is there is not the tenant, or when it was built
+// for another edition of the game - and in each of those cases the tenant is
+// recorded as skipped instead, with the reason.
+static ModManifest *findTenant() {
+  LOGI("Looking for %s...\n", HTTexts_TenantPackageName);
 
-  do {
-    if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-      continue;
-    if (!wcscmp(findData.cFileName, L".") || !wcscmp(findData.cFileName, L".."))
-      continue;
+  // Deciding what a mod is happens in exactly one place, ModInspect, which
+  // the launcher's scanner is built from too. Reimplementing any of it here
+  // would recreate the disagreement that shared core exists to remove - a mod
+  // the loader runs and the launcher calls broken, or the reverse.
+  const ModInspect::Result inspected =
+    ModInspect::InspectFolder(gPathModsWide, kTenantFolder);
+  if (inspected.outcome != ModInspect::Outcome::Ok) {
+    LOGW(
+      "Inspecting %ls: %s%s%s\n",
+      kTenantFolder,
+      ModInspect::ToString(inspected.outcome),
+      inspected.detail.empty() ? "" : " - ",
+      inspected.detail.c_str());
+    skipTenant(refusedProblem(inspected.outcome));
+    return nullptr;
+  }
+  for (const ModInspect::Anomaly anomaly : inspected.anomalies) {
+    // Cast to void because LOG*() compiles to nothing outside the debug
+    // build, which leaves this loop body empty and the variable unused. The
+    // anomalies are not the loader's business to act on - it accepted the mod
+    // - they are for the scanner to hand the launcher.
+    (void)anomaly;
+    LOGW("Mod folder %ls: %s\n", kTenantFolder, ModInspect::ToString(anomaly));
+  }
 
-    LOGI("Found potential mod folder: %ls\n", findData.cFileName);
+  // The folder is the tenant's by convention and the identity inside it by
+  // claim, and the two must agree. A DLL there claiming another package is
+  // not the mod this loader serves.
+  if (inspected.identity.packageName != HTTexts_TenantPackageName) {
+    LOGW(
+      "Mod folder %ls identifies as %s.\n",
+      kTenantFolder,
+      inspected.identity.packageName.c_str());
+    skipTenant("Not loaded: its folder holds a different mod.");
+    return nullptr;
+  }
 
-    // Deciding what a mod is happens in exactly one place, ModInspect, which
-    // the launcher's scanner is built from too. Reimplementing any of it here
-    // would recreate the disagreement that shared core exists to remove - a mod
-    // the loader runs and the launcher calls broken, or the reverse.
-    const ModInspect::Result inspected =
-      ModInspect::InspectFolder(gPathModsWide, findData.cFileName);
-    if (inspected.outcome != ModInspect::Outcome::Ok) {
-      LOGW(
-        "Skipping %ls: %s%s%s\n",
-        findData.cFileName,
-        ModInspect::ToString(inspected.outcome),
-        inspected.detail.empty() ? "" : " - ",
-        inspected.detail.c_str());
-      continue;
-    }
-    for (const ModInspect::Anomaly anomaly : inspected.anomalies) {
-      // Cast to void because LOG*() compiles to nothing outside the debug
-      // build, which leaves this loop body empty and the variable unused. The
-      // anomalies are not the loader's business to act on - it accepted the mod
-      // - they are for the scanner to hand the launcher.
-      (void)anomaly;
-      LOGW(
-        "Mod folder %ls: %s\n", findData.cFileName, ModInspect::ToString(anomaly));
-    }
+  // Dependencies are not read: with one tenant there is no other mod for one
+  // to name. A tenant that declares some anyway loads exactly the same way.
+  if (!inspected.identity.dependencies.empty()) {
+    LOGW("Mod folder %ls declares dependencies, which are ignored.\n",
+      kTenantFolder);
+  }
 
-    ModManifest manifest;
-    manifest.paths.folder =
-      HTiPathJoin({std::wstring(gPathModsWide), findData.cFileName});
-    manifest.paths.dll = inspected.dllPath;
-    manifest.meta.packageName = inspected.identity.packageName;
-    // Already accepted by ModInspect::ParsesAsVersion, which is this same
-    // parser - so this cannot fail without the two disagreeing.
-    manifest.meta.version.read(inspected.identity.version);
-    manifest.modName = inspected.identity.modName;
-    manifest.description = inspected.identity.description;
-    manifest.author = inspected.identity.author;
-    manifest.gameEditionFlags = inspected.identity.gameEdition;
-    for (const ModInspect::Dependency &dep : inspected.identity.dependencies) {
-      ModDependency out;
-      out.packageName = dep.packageName;
-      out.constraint = dep.versionRange;
-      manifest.dependencies.push_back(out);
-    }
+  ModManifest manifest;
+  manifest.paths.folder =
+    HTiPathJoin({std::wstring(gPathModsWide), kTenantFolder});
+  manifest.paths.dll = inspected.dllPath;
+  manifest.meta.packageName = inspected.identity.packageName;
+  // Already accepted by ModInspect::ParsesAsVersion, which is this same
+  // parser - so this cannot fail without the two disagreeing.
+  manifest.meta.version.read(inspected.identity.version);
+  manifest.modName = inspected.identity.modName;
+  manifest.description = inspected.identity.description;
+  manifest.author = inspected.identity.author;
+  manifest.gameEditionFlags = inspected.identity.gameEdition;
 
-    if (!HTiBackendCheckEdition(manifest.gameEditionFlags))
-      // Skip mods that not compatible with current game edition.
-      continue;
+  // A tenant built for another edition of the game is not loaded. The
+  // running edition is always known by now: the Sky backend reads it off the
+  // game's window before it starts setup at all.
+  if (!HTiBackendCheckEdition(manifest.gameEditionFlags)) {
+    skipTenant("Not loaded: it is for a different version of Sky.");
+    return nullptr;
+  }
 
-    // When scanning mods, the mod data won't be accessed by multiple threads,
-    // so we don't need to protect it.
-    if (gModDataLoader.find(manifest.meta.packageName) != gModDataLoader.end()) {
-      // Skip duplicated mods.
-      LOGW("Duplicated package name %s, skipped.\n", manifest.meta.packageName.c_str());
-      continue;
-    }
+  manifest.status = ModStatus_Ok;
+  manifest.runtime = nullptr;
+  // Nothing else touches the mod data while the tenant is being found, so
+  // this needs no lock.
+  ModManifest &stored = gModDataLoader[HTTexts_TenantPackageName];
+  stored = manifest;
 
-    manifest.status = ModStatus_Ok;
-    manifest.runtime = nullptr;
-    gModDataLoader[manifest.meta.packageName] = manifest;
-
-    LOGI("Scanned mod %s.\n", manifest.modName.data());
-  } while (FindNextFileW(hFindFile, &findData));
-
-  FindClose(hFindFile);
+  LOGI("Found mod %s.\n", stored.modName.data());
+  return &stored;
 }
 
 // Get all exported functions for the loader.
@@ -116,207 +159,127 @@ static void getModExportedFunctions(
     hMod, "HTModOnEnable");
 }
 
-// Visit state values for topological sort.
-enum VisitStates {
-  VS_UNVISITED = 0,
-  VS_VISITING = 1,
-  VS_DONE = 2,
-  VS_DEAD = -1
-};
- 
-// Recursively visit a mod and its dependencies for topological sorting.
-// Adds resolved mods to `result` in dependency-first order.
-// Returns false if the package should be discarded.
-static bool visitMod(
-  const std::string &pkg,
-  std::map<std::string, int> &states,
-  std::vector<ModManifest *> &result
+// What the Mods tab says when LoadLibraryW fails with `err`.
+static std::string loadProblem(
+  DWORD err
 ) {
-  int &state = states[pkg];
- 
-  if (state == VS_DONE)
-    return true;
-  if (state == VS_DEAD)
-    return false;
-
-  ModManifest &manifest = gModDataLoader[pkg];
-
-  if (state == VS_VISITING) {
-    // Back-edge detected: this package is part of a dependency cycle.
-    LOGW("Dependency cycle detected at %s, discarding.\n", pkg.c_str());
-    state = VS_DEAD;
-    manifest.setStatus(ModStatus_CycleDep);
-    return false;
+  switch (err) {
+  case ERROR_PROC_NOT_FOUND:
+    // Deliberately does NOT promise that a newer loader fixes it. 127 means
+    // some procedure was missing - it may be one of OUR exports, or one in
+    // any dependency the mod pulls in, and nothing here can tell those apart.
+    // Keep the number so it can be looked up.
+    return "Failed to load (127): incompatible loader or a missing"
+           " dependency - a required function was not found.";
+  case ERROR_MOD_NOT_FOUND:
+    return "Failed to load: the DLL, or something it depends on, is missing.";
+  case ERROR_BAD_EXE_FORMAT:
+    return "Failed to load: wrong architecture.";
+  default: {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Failed to load (Windows error %lu).",
+             (unsigned long)err);
+    return buf;
   }
- 
-  state = VS_VISITING;
-
-  for (const ModDependency &dep: manifest.dependencies) {
-    auto it = gModDataLoader.find(dep.packageName);
- 
-    if (it == gModDataLoader.end()) {
-      LOGW("Dependency %s not found for %s, discarding.\n",
-        dep.packageName.c_str(),
-        pkg.c_str());
-
-      state = VS_DEAD;
-      manifest.setStatus(ModStatus_MissingDep);
-
-      return false;
-    }
- 
-    if (
-      !dep.constraint.empty()
-      && !HTiSemVer::satisfies(it->second.meta.version, dep.constraint)
-    ) {
-      LOGW("Dependency %s version unsatisfied for %s, discarding.\n",
-        dep.packageName.c_str(),
-        pkg.c_str());
-
-      state = VS_DEAD;
-      manifest.setStatus(ModStatus_MismatchDep);
-
-      return false;
-    }
- 
-    if (!visitMod(dep.packageName, states, result)) {
-      LOGW("Package %s discarded due to failed dependency %s.\n",
-        pkg.c_str(),
-        dep.packageName.c_str());
-
-      state = VS_DEAD;
-      manifest.setStatus(ModStatus_RemoveByDep);
-
-      return false;
-    }
   }
- 
-  state = VS_DONE;
-  result.push_back(&manifest);
-
-  return true;
-}
- 
-// Construct the dependency tree and the mod loading order, remove invalid packages.
-static std::vector<ModManifest *> resolveMods() {
-  std::map<std::string, int> states;
-  std::vector<ModManifest *> result;
- 
-  for (auto &pair: gModDataLoader)
-    states[pair.first] = VS_UNVISITED;
- 
-  for (auto &pair: gModDataLoader) {
-    if (states[pair.first] == VS_UNVISITED)
-      visitMod(pair.first, states, result);
-  }
-
-  return result;
 }
 
-// Load all avaliable mods into the game process and register mod runtime data.
-static void expandMods(
-  const std::vector<ModManifest *> &order
+// Load the tenant into the game process and register its runtime data.
+static void loadTenant(
+  ModManifest *mod
 ) {
-  HMODULE hMod;
-  ModRuntime *runtimeData;
+  const char *modName = mod->modName.c_str();
   std::wstring oldPath;
 
-  for (auto mod: order) {
-    const char *modName = mod->modName.c_str();
+  (void)modName;
 
-    (void)modName;
-
-    if (mod->meta.packageName == HTTexts_ModLoaderPackageName)
-      // The data of mod loader itself is set in bootstrap(), so we don't need
-      // to load it again.
-      continue;
-
-    // Save previous dll directory.
-    u32 needed = GetDllDirectoryW(0, nullptr);
-    if (needed) {
-      oldPath.resize(needed + 1);
-      GetDllDirectoryW(needed + 1, oldPath.data());
-    }
-
-    // Set new dll searching directory.
-    SetDllDirectoryW(mod->paths.folder.c_str());
-
-    // Load library.
-    hMod = LoadLibraryW(mod->paths.dll.c_str());
-    if (hMod) {
-      LOGI("Loaded mod %s.\n", modName);
-    } else {
-      // Report the real reason. "No such file" was printed for EVERY failure,
-      // which is actively misleading for the most likely one: a mod built
-      // against a newer loader fails with ERROR_PROC_NOT_FOUND because an
-      // import cannot bind, and the file is sitting right there.
-      DWORD err = GetLastError();
-      mod->loadError = static_cast<unsigned long>(err);
-      LOGW("Load mod %s failed: error %lu\n", modName, mod->loadError);
-
-      // The enum has carried this value since before it meant anything. Now a
-      // mod that cannot load stays in the list, named, with a reason - which
-      // is the whole point of reading its metadata without loading it.
-      mod->setStatus(ModStatus_DllErr);
-    }
-
-    // Restore saved dll searching directory.
-    if (needed)
-      SetDllDirectoryW(oldPath.c_str());
-    else
-      SetDllDirectoryW(nullptr);
-
-    // Save runtime data.
-    if (hMod) {
-      // While the mods are loading one by one, subthreads created by the mods
-      // may access mod data structs at the same time, so we need a global
-      // lock.
-      std::lock_guard<std::mutex> lock(gModDataLock);
-      runtimeData = &gModDataRuntime[hMod];
-      runtimeData->handle = hMod;
-      runtimeData->manifest = mod;
-      getModExportedFunctions(runtimeData);
-      mod->runtime = runtimeData;
-
-      HTiRegisterHandle(hMod, HTHandleType_Mod);
-
-      HTiOptionsLoadFor(runtimeData);
-    }
+  // Save previous dll directory.
+  u32 needed = GetDllDirectoryW(0, nullptr);
+  if (needed) {
+    oldPath.resize(needed + 1);
+    GetDllDirectoryW(needed + 1, oldPath.data());
   }
+
+  // Set new dll searching directory.
+  SetDllDirectoryW(mod->paths.folder.c_str());
+
+  // Load library.
+  HMODULE hMod = LoadLibraryW(mod->paths.dll.c_str());
+  if (hMod) {
+    LOGI("Loaded mod %s.\n", modName);
+  } else {
+    // Report the real reason. "No such file" was printed for EVERY failure,
+    // which is actively misleading for the most likely one: a mod built
+    // against a newer loader fails with ERROR_PROC_NOT_FOUND because an
+    // import cannot bind, and the file is sitting right there.
+    DWORD err = GetLastError();
+    LOGW("Load mod %s failed: error %lu\n", modName, (unsigned long)err);
+
+    // A mod that cannot load stays in the list, named, with a reason - which
+    // is the whole point of reading its metadata without loading it.
+    mod->setStatus(ModStatus_DllErr);
+    mod->problem = loadProblem(err);
+  }
+
+  // Restore saved dll searching directory.
+  if (needed)
+    SetDllDirectoryW(oldPath.c_str());
+  else
+    SetDllDirectoryW(nullptr);
+
+  if (!hMod)
+    return;
+
+  // Save runtime data. Threads the tenant starts while it loads may reach the
+  // mod data structs at the same time, so this takes the global lock.
+  std::lock_guard<std::mutex> lock(gModDataLock);
+  ModRuntime *runtimeData = &gModDataRuntime[hMod];
+  runtimeData->handle = hMod;
+  runtimeData->manifest = mod;
+  getModExportedFunctions(runtimeData);
+  mod->runtime = runtimeData;
+
+  HTiRegisterHandle(hMod, HTHandleType_Mod);
+
+  HTiOptionsLoadFor(runtimeData);
 }
 
-// Call the HTModOnInit() functions exported by the mods one by one. Mods
-// can only use HTAPI within and after the function is called.
-static void initMods(
-  const std::vector<ModManifest *> &order
+// Call a mod's exported HTModOnInit(). The mod can only use HTAPI within and
+// after this call.
+static void initMod(
+  ModManifest *mod
 ) {
-  PFN_HTModOnInit fn;
+  const char *modName = mod->modName.c_str();
+  (void)modName;
 
-  for (auto mod: order) {
-    const char *modName = mod->modName.c_str();
-    (void)modName;
+  if (!mod->runtime)
+    return;
 
-    if (!mod->runtime)
-      continue;
+  PFN_HTModOnInit fn = mod->runtime->loaderFunc.pfn_HTModOnInit;
 
-    fn = mod->runtime->loaderFunc.pfn_HTModOnInit;
-
-    // We assume that mod that does not export HTModOnInit() has an independent
-    // initialization (or enabling, see HTiEnableMods() below) process, so we
-    // consider that they are initialized successfully
-    if (!fn || fn(nullptr) == HT_SUCCESS)
-      LOGI("Initialized mod %s.\n", modName);
-    else
-      LOGW("Failed to initialize mod %s.\n", modName);
-  }
+  // We assume that a mod that does not export HTModOnInit() has an
+  // independent initialization (or enabling, see HTiEnableMods() below)
+  // process, so we consider that it is initialized successfully.
+  if (!fn || fn(nullptr) == HT_SUCCESS)
+    LOGI("Initialized mod %s.\n", modName);
+  else
+    LOGW("Failed to initialize mod %s.\n", modName);
 }
 
 HTStatus HTiLoadMods() {
   HTiBootstrap();
-  scanMods();
-  auto order = resolveMods();
-  expandMods(order);
-  initMods(order);
+
+  ModManifest *tenant = findTenant();
+  if (tenant)
+    loadTenant(tenant);
+
+  // The loader is a mod of its own (see HTiBootstrap), and its HTModOnInit()
+  // is what registers the menu hotkey. With no list of mods to walk nothing
+  // else would call it, so it is called here, and before the tenant's so the
+  // menu hotkey is live by the time the tenant initializes.
+  initMod(&gModDataLoader[HTTexts_ModLoaderPackageName]);
+  if (tenant)
+    initMod(tenant);
 
   return HT_SUCCESS;
 }
@@ -336,11 +299,5 @@ HTStatus HTiEnableMods() {
       LOGW("Failed to enable mod %s.\n", modName);
   }
 
-  return HT_SUCCESS;
-}
-
-HTStatus HTiInjectDll(
-  const wchar_t *path
-) {
   return HT_SUCCESS;
 }

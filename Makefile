@@ -78,9 +78,6 @@ LFLAGS += -L./libraries/vulkan/Lib -lvulkan-1
 # Include cJSON.
 CFLAGS += -I./libraries/cJSON
 LFLAGS += -L./libraries/cJSON -lcjson
-# Include LevelDB.
-CFLAGS += -I./libraries/leveldb/include
-LFLAGS += -L./libraries/leveldb/lib -lleveldb -lz
 
 # The second reference, after every static archive. The release build happened
 # to get away with only the first; any change to the optimisation flags exposed
@@ -162,7 +159,7 @@ scanner: $(DIST_DIR) libs
 
 # No `libs` prerequisite: the wrapper links none of them, and requiring the
 # vendored libraries to be built first would make a 300-line helper wait on
-# leveldb. -mwindows so Steam does not flash a console on every launch.
+# all of them. -mwindows so Steam does not flash a console on every launch.
 wrapper: $(DIST_DIR)
 	@echo Building wrapper ...
 	@$(CXX) --std=c++17 $(CFLAGS) -municode -mwindows $(WRAPPER_SRC) \
@@ -220,7 +217,6 @@ libs:
 	-@$(MAKE) -s -C ./libraries/imgui-1.92.2b all
 	-@$(MAKE) -s -C ./libraries/MinHook libMinHook.a
 	-@$(MAKE) -s -C ./libraries/cJSON libcjson.a
-	-@$(MAKE) -s -C ./libraries/leveldb all
 
 clean_libs:
 	-@$(MAKE) -s -C ./libraries/imgui-1.92.2b clean

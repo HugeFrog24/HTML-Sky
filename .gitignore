@@ -20,12 +20,6 @@ test*
 !test/fixtures/*.c
 !test/fixtures/*.rc
 !test/fixtures/*.json
-# zlib only. It is prebuilt and carried as-is: pure C with no thread-model
-# dependency, so one archive links under any toolchain. leveldb is deliberately
-# NOT un-ignored - it is compiled from libraries/leveldb/src/ by `make libs`,
-# because a prebuilt C++ archive silently encodes the thread model it was built
-# with and then links under only half of them.
-!libraries/leveldb/lib/libz.a
 
 # Folders
 .vscode/

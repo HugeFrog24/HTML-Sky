@@ -16,18 +16,21 @@ static void renderBackendData() {
   ImGui::BulletText("Executable file: <%ls>.%p", gGameProcessName.c_str(), gGameStatus.baseAddr);
 }
 
+// Named by case rather than by position in an array, so removing or
+// reordering a status cannot shift every name after it onto the wrong value.
+static const char *statusName(
+  ModStatus status
+) {
+  switch (status) {
+  case ModStatus_Ok:      return "Ok";
+  case ModStatus_DllErr:  return "DllErr";
+  case ModStatus_Skipped: return "Skipped";
+  default:                return "?";
+  }
+}
+
 // Show scanned mods.
 static void renderMods() {
-  static const char *statusName[] = {
-    "Ok",
-    "Disabled",
-    "MissingDep",
-    "MismatchDep",
-    "CycleDep",
-    "RemoveByDep",
-    "DllErr"
-  };
-
   for (auto &it: gModDataLoader) {
     auto &mod = it.second;
 
@@ -42,7 +45,7 @@ static void renderMods() {
     else
       ImGui::BulletText("Compatible game id: %d", mod.gameEditionFlags);
 
-    ImGui::BulletText("Status: %s", statusName[mod.status]);
+    ImGui::BulletText("Status: %s", statusName(mod.status));
 
     if (mod.runtime)
       ImGui::BulletText("HMODULE: 0x%p", mod.runtime->handle);

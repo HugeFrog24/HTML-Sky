@@ -18,10 +18,6 @@ void HTiWindowMain(bool *show) {
       HTiMenuAbouts();
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Console")) {
-      HTiMenuConsole();
-      ImGui::EndTabItem();
-    }
     if (ImGui::BeginTabItem("Mods")) {
       HTiMenuModList();
       ImGui::EndTabItem();

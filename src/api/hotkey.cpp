@@ -1,5 +1,9 @@
 // ----------------------------------------------------------------------------
-// Hotkey APIs of HT's Mod Loader.
+// Hotkeys of HT's Mod Loader.
+//
+// Internal now: the loader binds its own keys (the menu toggle, and the
+// rebinding UI in the menu), and no mod calls this API. The calls only mods
+// used - reading a binding, resetting it, polling a key, unlistening - went.
 // ----------------------------------------------------------------------------
 #include <string>
 #include "imgui.h"
@@ -40,7 +44,6 @@ void HTiHotkeyDispatch(
   }
 
   HTKeyEvent event;
-  event.down = flags == HTKeyEventFlags_Down;
   event.key = key;
   event.flags = flags;
   event.preventFlags = HTKeyEventPreventFlags_None;
@@ -50,9 +53,6 @@ void HTiHotkeyDispatch(
       // Skip all key binds which isn't marked as NoBlock when the key event
       // is intented to be blocked.
       continue;
-
-    // Set the key state.
-    (*it)->isDown = flags == HTKeyEventFlags_Down;
 
     // Trigger the event callback.
     PFN_HTHotkeyCallback cb = (*it)->listener;
@@ -88,7 +88,7 @@ void HTiHotkeyUpdateCooldown() {
     gKeyModifyCooldown--;
 }
 
-HTMLAPIATTR HTHandle HTMLAPI HTHotkeyRegister(
+HTHandle HTMLAPI HTHotkeyRegister(
   HMODULE hModule,
   LPCSTR name,
   HTKeyCode defaultCode
@@ -96,7 +96,7 @@ HTMLAPIATTR HTHandle HTMLAPI HTHotkeyRegister(
   return HTHotkeyRegisterEx(hModule, name, defaultCode, HTHotkeyFlags_None);
 }
 
-HTMLAPIATTR HTHandle HTMLAPI HTHotkeyRegisterEx(
+HTHandle HTMLAPI HTHotkeyRegisterEx(
   HMODULE hModule,
   LPCSTR name,
   HTKeyCode defaultCode,
@@ -136,36 +136,17 @@ HTMLAPIATTR HTHandle HTMLAPI HTHotkeyRegisterEx(
   result->displayName = name;
   result->flags = flags;
 
-  rt->hasRegisteredKeys = 1;
-
   gHotkeyCallbacks[result->key].insert(result);
   HTiRegisterHandle(result, HTHandleType_Hotkey);
 
   return HTiErrAndRet(HTError_Success, result);
 }
 
-HTMLAPIATTR HTKeyCode HTMLAPI HTHotkeyBindGet(
-  HTHandle hKey
-) {
-  ModKeyBind *kb;
-
-  if (!hKey)
-    return HTiErrAndRet(HTError_InvalidParam, HTKey_NamedKey_END);
-  if (!HTiCheckHandleType(hKey, HTHandleType_Hotkey))
-    return HTiErrAndRet(HTError_InvalidHandle, HTKey_NamedKey_END);
-
-  kb = (ModKeyBind *)hKey;
-
-  return HTiErrAndRet(HTError_Success, kb->key);
-}
-
-static HTStatus HTHotkeyBindEx(
+HTStatus HTMLAPI HTHotkeyBind(
   HTHandle hKey,
-  HTKeyCode keyCode,
-  bool reset
+  HTKeyCode keyCode
 ) {
   ModKeyBind *kb;
-  HTKeyEvent event;
 
   if (!hKey)
     return HTiErrAndRet(HTError_InvalidParam, HT_FAIL);
@@ -174,18 +155,17 @@ static HTStatus HTHotkeyBindEx(
 
   kb = (ModKeyBind *)hKey;
 
-  if (reset)
-    keyCode = kb->defaultKey;
   if (kb->key == keyCode)
     // If the key is not changed, we won't actually set the key.
     return HTiErrAndRet(HTError_Success, HT_SUCCESS);
 
-  event.flags = reset
-    ? HTKeyEventFlags_ChangeBind
-    : HTKeyEventFlags_ResetBind;
+  // A rebind reports ChangeBind. The helper this was shared with the reset
+  // path had the two swapped, so every rebind claimed to be a reset - which
+  // nothing noticed, because the menu listener only acts on key-down.
+  HTKeyEvent event = {};
+  event.flags = HTKeyEventFlags_ChangeBind;
   event.hKey = (HTHandle)kb;
   event.key = kb->key;
-  event.down = 0;
 
   {
     std::lock_guard<std::mutex> lock(gModDataLock);
@@ -206,34 +186,7 @@ static HTStatus HTHotkeyBindEx(
   return HTiErrAndRet(HTError_Success, HT_SUCCESS);
 }
 
-HTMLAPIATTR HTStatus HTMLAPI HTHotkeyBind(
-  HTHandle hKey,
-  HTKeyCode keyCode
-) {
-  return HTHotkeyBindEx(hKey, keyCode, false);
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTHotkeyBindReset(
-  HTHandle hKey
-) {
-  return HTHotkeyBindEx(hKey, HTKey_None, true);
-}
-
-HTMLAPIATTR u32 HTMLAPI HTHotkeyPressed(
-  HTHandle hKey
-) {
-  ModKeyBind *kb;
-
-  if (!hKey)
-    return 0;
-  if (gKeyModifyCooldown)
-    return 0;
-  kb = (ModKeyBind *)hKey;
-
-  return (u32)kb->isDown;
-}
-
-HTMLAPIATTR HTStatus HTMLAPI HTHotkeyListen(
+HTStatus HTMLAPI HTHotkeyListen(
   HTHandle hKey,
   PFN_HTHotkeyCallback callback
 ) {
@@ -253,30 +206,10 @@ HTMLAPIATTR HTStatus HTMLAPI HTHotkeyListen(
   return HT_SUCCESS;
 }
 
-HTMLAPIATTR HTStatus HTMLAPI HTHotkeyUnlisten(
-  HTHandle hKey,
-  LPVOID reserved
-) {
-  ModKeyBind *kb;
-
-  if (!hKey)
-    return HTiErrAndRet(HTError_InvalidParam, HT_FAIL);
-  if (!HTiCheckHandleType(hKey, HTHandleType_Hotkey))
-    return HTiErrAndRet(HTError_InvalidHandle, HT_FAIL);
-
-  kb = (ModKeyBind *)hKey;
-  {
-    std::lock_guard<std::mutex> lock(gModDataLock);
-    kb->listener = nullptr;
-  }
-
-  return HT_SUCCESS;
-}
-
 /**
  * Modified from ImGui. Get the name string of a key.
  */
-HTMLAPIATTR const char *HTMLAPI HTHotkeyGetName(HTKeyCode key) {
+const char *HTMLAPI HTHotkeyGetName(HTKeyCode key) {
   if (key == HTKey_None)
     return "None";
   if (!HTiIsNamedKey(key))
