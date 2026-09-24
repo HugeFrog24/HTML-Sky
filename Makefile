@@ -23,6 +23,14 @@ CPP_OBJ = $(addprefix $(DIST_DIR)/, $(notdir $(CPP_SRC:.cpp=.o)))
 CXX_HEADER = $(wildcard $(SRC_DIR)/*.h $(SRC_DIR)/*/*.h \
 	$(SRC_DIR)/*.hpp $(SRC_DIR)/*/*.hpp)
 
+# The UI fonts, compiled into winhttp.dll by src/ui/fonts.rc. A rule of its own
+# because the object globs above only see .c and .cpp. The .ttf files are
+# prerequisites so that replacing a font rebuilds the resource object; -I. lets
+# the .rc name them from the repo root.
+FONT_RC = $(SRC_DIR)/ui/fonts.rc
+FONT_OBJ = $(DIST_DIR)/fonts.res.o
+FONT_FILES = ./fonts/DejaVuSans.ttf ./fonts/DroidSansFallback.ttf
+
 TARGET = winhttp.dll
 BIN_TARGET = $(DIST_DIR)/$(TARGET)
 
@@ -116,7 +124,7 @@ WRAPPER_SRC = ./wrapper/main.cpp
 # the file as the default goal, and putting it here quietly made a bare `make`
 # build the scanner instead of the DLL.
 
-$(BIN_TARGET): $(C_OBJ) $(CPP_OBJ)
+$(BIN_TARGET): $(C_OBJ) $(CPP_OBJ) $(FONT_OBJ)
 	@echo Linking ...
 	@$(CXX) --std=c++17 $(CFLAGS) $^ -shared -o $@ $(LFLAGS)
 	@echo Done.
@@ -128,6 +136,10 @@ $(DIST_DIR)/%.o: %.c $(CXX_HEADER)
 $(DIST_DIR)/%.o: %.cpp $(CXX_HEADER)
 	@echo Compiling file "$<" ...
 	@$(CXX) $(CFLAGS) -c $< -o $@
+
+$(FONT_OBJ): $(FONT_RC) $(FONT_FILES)
+	@echo Compiling resources "$<" ...
+	@windres -I. $< $@
 
 $(DIST_DIR):
 	-@mkdir dist

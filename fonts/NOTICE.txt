@@ -3,7 +3,8 @@ Fonts bundled with HT's Mod Loader (winhttp.dll)
 
 The loader bundles two fonts so its ImGui overlay can render the scripts real
 UI text and player nicknames use (Latin, Cyrillic, Georgian, Vietnamese and
-CJK). They load at startup from the folder the loader runs in.
+CJK). They are compiled into winhttp.dll as resources (src/ui/fonts.rc) and
+load at startup.
 
 DejaVuSans.ttf
   DejaVu Sans 2.37. Based on Bitstream Vera; DejaVu changes are in the public

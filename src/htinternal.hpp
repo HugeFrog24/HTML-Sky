@@ -737,6 +737,10 @@ extern bool gShowMainMenu
 // Backends should call this function at least once before calling
 // `HTiBackendGLEnterCritical()`.
 void HTiInitGUI();
+// Give ImGui the fonts compiled into this DLL (src/ui/fonts.rc), so text in
+// non-Latin scripts renders. Called once by HTiInitGUI().
+void HTiLoadFonts(
+  ImGuiIO &);
 // Destroy ImGui context.
 void HTiDeinitGUI();
 // Show all registered windows. Referenced by layer.cpp.

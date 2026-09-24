@@ -1,0 +1,11 @@
+/* The UI fonts, built into winhttp.dll rather than shipped beside it. The
+   launcher installs only the files it names and refuses an archive carrying
+   anything else, and a resource travels with the loader through every set-up,
+   move and removal. Read by HTiLoadFonts in gui.cpp.
+
+   Language-neutral, so which variant FindResourceW picks cannot depend on the
+   player's Windows display language. Paths are from the repo root (windres
+   -I. in the Makefile). */
+LANGUAGE 0, 0
+FONT_DEJAVUSANS        RCDATA "fonts/DejaVuSans.ttf"
+FONT_DROIDSANSFALLBACK RCDATA "fonts/DroidSansFallback.ttf"

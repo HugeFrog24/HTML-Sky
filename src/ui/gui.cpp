@@ -2,7 +2,6 @@
 // Graphics renderer.
 // ----------------------------------------------------------------------------
 #include <windows.h>
-#include <string>
 #include <unordered_map>
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -14,36 +13,6 @@
 
 bool gShowMainMenu = true
   , gShowDebugger = false;
-
-// Give ImGui a font that covers the scripts real UI text uses - Latin,
-// Cyrillic, Georgian and Vietnamese from DejaVu Sans, merged with CJK from
-// DroidSansFallback. Without it ImGui bakes ProggyClean, which is ASCII-only,
-// so Chinese/Russian/Georgian text (including arbitrary player nicknames)
-// renders as '?'. The .ttf files ship beside winhttp.dll and load from the
-// loader's own directory; a missing file degrades to the previous ASCII
-// behaviour rather than failing. ImGui 1.92 loads glyphs on demand - the
-// Vulkan backend sets ImGuiBackendFlags_RendererHasTextures - so no glyph
-// ranges are needed and a nickname rasterises the first time it is shown.
-static void HTiLoadFonts(ImGuiIO &io) {
-  const int n = WideCharToMultiByte(CP_UTF8, 0, gPathDllWide, -1, nullptr, 0,
-                                    nullptr, nullptr);
-  if (n <= 1)
-    return;
-  std::string dir(static_cast<size_t>(n - 1), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, gPathDllWide, -1, &dir[0], n, nullptr,
-                      nullptr);
-
-  const float kFontSize = 16.0f;
-  const std::string base = dir + "\\DejaVuSans.ttf";
-  ImFont *font = io.Fonts->AddFontFromFileTTF(base.c_str(), kFontSize);
-  if (font == nullptr)
-    return; // file absent: ImGui bakes its ASCII default, exactly as before.
-
-  ImFontConfig cfg;
-  cfg.MergeMode = true; // fold CJK into the base font, one ImFont
-  const std::string cjk = dir + "\\DroidSansFallback.ttf";
-  io.Fonts->AddFontFromFileTTF(cjk.c_str(), kFontSize, &cfg);
-}
 
 /**
  * Initialize ImGui context and window message hook.
