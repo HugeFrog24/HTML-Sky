@@ -3,6 +3,7 @@
 # Wildcard files.
 *.a
 *.o
+*.d
 *.dll
 *.exe
 *.bak
